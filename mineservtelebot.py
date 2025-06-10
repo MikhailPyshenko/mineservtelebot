@@ -6,10 +6,11 @@ import ipaddress
 from pathlib import Path
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, MessageHandler, filters, BaseHandler
-from server_menu.server import Server
-from server_menu.service import Service
-from server_menu.whitelist import W
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, \
+    MessageHandler, filters, BaseHandler
+from server_menu.service import Service as ServerService
+from server_menu.server import Server as MinecraftServer
+
 
 # ==================== УТИЛИТЫ ====================
 async def reply_to_update(update: Update, text: str, reply_markup=None, show_alert=False, parse_mode=None):
@@ -174,12 +175,16 @@ class MinecraftBot:
         self._write_pid_file()
         self.application = ApplicationBuilder().token(Config.BOT_TOKEN).build()
         self.whitelist_manager = WhitelistManager()
-        self.admin = Admin(self)  # Инициализируем до setup_handlers
+        # Инициализация серверных модулей
+        self.server_service = ServerService(screen_name=os.getenv("SCREEN_NAME", "minecraft"), server_dir=os.getenv("SERVER_DIR", "/path/to/server"))
+        self.minecraft_server = MinecraftServer(screen_name=os.getenv("SCREEN_NAME", "minecraft"))
+        # Инициализация компонентов бота
+        self.service = Service(self)  # Сервисные функции
+        self.server = Server(self)  # Серверные функции
+        self.admin = Admin(self)
         self.registration = Registration(self)
         self.user = User(self)
         self.setup_handlers()
-        self.server = Server()
-        self.service = Service()
         Database.init()
 
     def _write_pid_file(self):
@@ -192,18 +197,19 @@ class MinecraftBot:
 
     def setup_error_handler(self):
         """Настройка обработчика ошибок"""
+
         async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
             error_msg = f"Произошла ошибка: {context.error}"
             logger.error(error_msg)
             if isinstance(update, Update):
                 await reply_to_update(update, "⚠️ Произошла ошибка при обработке запроса")
+
         self.application.add_error_handler(error_handler)
 
     def setup_handlers(self):
         """Настройка обработчиков"""
-        handlers = []
-        # Базовые команды
-        handlers.extend([
+        handlers = [
+            # Базовые команды
             CommandHandler("start", self.start),
             CommandHandler("help", self.help_command),
             CommandHandler("user", self.send_user_menu),
@@ -214,33 +220,26 @@ class MinecraftBot:
             CallbackQueryHandler(self.help_command, pattern="^help$"),
             CallbackQueryHandler(self._handle_unreg_command, pattern="^unreg$"),
             CallbackQueryHandler(self.exit, pattern="^exit$"),
-        ])
-        # Обработчик регистрации
-        handlers.append(self._create_registration_handler())
-        # Пользовательские обработчики
-        user_handlers = self._create_user_handlers()
-        if isinstance(user_handlers, list):
-            handlers.extend(user_handlers)
-        elif isinstance(user_handlers, BaseHandler):
-            handlers.append(user_handlers)
-        # Обработчик администрирования
-        admin_handlers = self._create_admin_handlers()
-        if isinstance(admin_handlers, list):
-            handlers.extend(admin_handlers)
-        elif isinstance(admin_handlers, BaseHandler):
-            handlers.append(admin_handlers)
-        # Серверные обработчики
-        server_handlers = self._create_server_handlers()
-        if isinstance(server_handlers, list):
-            handlers.extend(server_handlers)
-        elif isinstance(server_handlers, BaseHandler):
-            handlers.append(server_handlers)
-        # Сервисные обработчики
-        service_handlers = self._create_service_handlers()
-        if isinstance(service_handlers, list):
-            handlers.extend(service_handlers)
-        elif isinstance(service_handlers, BaseHandler):
-            handlers.append(service_handlers)
+            # Обработчик регистрации
+            self._create_registration_handler(),
+            # Пользовательские обработчики
+            *self._create_user_handlers(),
+            # Обработчик администрирования
+            *self._create_admin_handlers(),
+            # Серверные обработчики
+            CallbackQueryHandler(self.server.server_menu, pattern="^admin_server$"),
+            CallbackQueryHandler(self.server.get_players_count, pattern="^server_players$"),
+            CallbackQueryHandler(self.server.get_weather_menu, pattern="^server_weather$"),
+            CallbackQueryHandler(self.server.set_weather, pattern="^weather_"),
+            CallbackQueryHandler(self.server.reload_whitelist, pattern="^server_reload_whitelist$"),
+            self._create_chat_message_handler(),
+            # Сервисные обработчики
+            CallbackQueryHandler(self.service.service_menu, pattern="^admin_service$"),
+            CallbackQueryHandler(self.service.backup_world, pattern="^service_backup$"),
+            CallbackQueryHandler(self.service.start_server, pattern="^service_start$"),
+            CallbackQueryHandler(self.service.restart_server, pattern="^service_restart$"),
+            CallbackQueryHandler(self.service.stop_server, pattern="^service_stop$"),
+        ]
         # Убедимся, что все обработчики валидны
         valid_handlers = [h for h in handlers if isinstance(h, BaseHandler)]
         self.application.add_handlers(valid_handlers)
@@ -300,13 +299,16 @@ class MinecraftBot:
         """Создание обработчика регистрации"""
         registration = Registration(self)
         return ConversationHandler(
-            entry_points=[CommandHandler("reg", registration.start), CallbackQueryHandler(registration.start, pattern="^reg_start$")],
+            entry_points=[CommandHandler("reg", registration.start),
+                          CallbackQueryHandler(registration.start, pattern="^reg_start$")],
             states={
-                    Config.REG_NICK: [MessageHandler(filters.TEXT & ~filters.COMMAND, registration.process_nick)],
-                    Config.REG_IP: [MessageHandler(filters.TEXT & ~filters.COMMAND, registration.process_ip)],
-                    Config.REG_CONFIRM: [CallbackQueryHandler(registration.confirm, pattern="^reg_confirm_"),CallbackQueryHandler(registration.cancel_registration, pattern="^reg_confirm_no$")]
-                    },
-            fallbacks=[CommandHandler("cancel", registration.cancel_registration), CallbackQueryHandler(registration.cancel_registration, pattern="^cancel$")],
+                Config.REG_NICK: [MessageHandler(filters.TEXT & ~filters.COMMAND, registration.process_nick)],
+                Config.REG_IP: [MessageHandler(filters.TEXT & ~filters.COMMAND, registration.process_ip)],
+                Config.REG_CONFIRM: [CallbackQueryHandler(registration.confirm, pattern="^reg_confirm_"),
+                                     CallbackQueryHandler(registration.cancel_registration, pattern="^reg_confirm_no$")]
+            },
+            fallbacks=[CommandHandler("cancel", registration.cancel_registration),
+                       CallbackQueryHandler(registration.cancel_registration, pattern="^cancel$")],
             per_message=False
         )
 
@@ -373,20 +375,23 @@ class MinecraftBot:
 
     def _create_server_handlers(self):
         """Создание обработчиков для серверных команд"""
-        server = Server(self)
-        chat_msg_handler = ConversationHandler(
-            entry_points=[CallbackQueryHandler(server.send_chat_message, pattern="^server_send_chat$")],
-            states={"server_chat_msg_input": [MessageHandler(filters.TEXT & ~filters.COMMAND, server.process_chat_message)]},
-            fallbacks=[CommandHandler("cancel", lambda u, c: reply_to_update(u, "Отправка сообщения отменена")), CallbackQueryHandler(lambda u, c: reply_to_update(u, "Отправка сообщения отменена"), pattern="^cancel$")],
-            per_message=False
-        )
         return [
-            CallbackQueryHandler(server.server_menu, pattern="^admin_server$"),
-            CallbackQueryHandler(server.get_players_count, pattern="^server_players$"),
-            CallbackQueryHandler(server.get_weather, pattern="^server_weather$"),
-            CallbackQueryHandler(server.reload_whitelist, pattern="^server_reload_whitelist$"),
-            chat_msg_handler
+            CallbackQueryHandler(self.server.server_menu, pattern="^admin_server$"),
+            CallbackQueryHandler(self.server.get_players_count, pattern="^server_players$"),
+            CallbackQueryHandler(self.server.get_weather_menu, pattern="^server_weather$"),
+            CallbackQueryHandler(self.server.set_weather, pattern="^weather_"),
+            CallbackQueryHandler(self.server.reload_whitelist, pattern="^server_reload_whitelist$"),
+            self._create_chat_message_handler()
         ]
+
+    def _create_chat_message_handler(self):
+        """Создание обработчика сообщений чата"""
+        return ConversationHandler(
+            entry_points=[CallbackQueryHandler(self.server.send_chat_message, pattern="^server_send_chat$")],
+            states={"server_chat_msg_input": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.server.process_chat_message)]},
+            fallbacks=[CommandHandler("cancel", lambda u, c: reply_to_update(u, "Отправка сообщения отменена")),
+                       CallbackQueryHandler(lambda u, c: reply_to_update(u, "Отправка сообщения отменена"), pattern="^cancel$")],
+            per_message=False)
 
     def _create_service_handlers(self):
         """Создание обработчиков для сервисных команд"""
@@ -679,14 +684,9 @@ class Admin:
             if update.callback_query:
                 await update.callback_query.answer("Ошибка доступа", show_alert=True)
             return False
-
         if update.effective_user.id not in Config.ADMIN_IDS:
             logger.warning(f"Попытка доступа не-админа: {update.effective_user.id}")
-            await reply_to_update(
-                update,
-                "⛔ Доступ запрещён. Только для администраторов.",
-                show_alert=True
-            )
+            await reply_to_update(update, "⛔ Доступ запрещён.", show_alert=True)
             return False
         return True
 
@@ -700,28 +700,19 @@ class Admin:
             [InlineKeyboardButton("⚙️ Серверные функции", callback_data="admin_server")],
             [InlineKeyboardButton("🔧 Сервисные функции", callback_data="admin_service")],
             [InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast")],
-            [InlineKeyboardButton("❌ Выход в основное меню", callback_data="start")]  # Добавленная кнопка
+            [InlineKeyboardButton("❌ Выход в основное меню", callback_data="start")]
         ]
         await reply_to_update(update, "🔐 Админ-панель:", create_keyboard(buttons))
 
     async def _notify_admins(self, context: ContextTypes.DEFAULT_TYPE, message: str, user_id: int):
         """Уведомление администраторов"""
         buttons = [
-            [
-                InlineKeyboardButton("✅ Одобрить", callback_data=f"admin_approve_{user_id}"),
-                InlineKeyboardButton("❌ Отклонить", callback_data=f"admin_reject_{user_id}")
-            ]
-        ]
+            [InlineKeyboardButton("✅ Одобрить", callback_data=f"admin_approve_{user_id}"),
+             InlineKeyboardButton("❌ Отклонить", callback_data=f"admin_reject_{user_id}")]]
         kb = create_keyboard(buttons)
-
         for admin_id in Config.ADMIN_IDS:
             try:
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=message,
-                    reply_markup=kb,
-                    parse_mode="MarkdownV2"
-                )
+                await context.bot.send_message(chat_id=admin_id, text=message, reply_markup=kb, parse_mode="MarkdownV2")
             except Exception as e:
                 logger.error(f"Ошибка уведомления админа {admin_id}: {e}")
 
@@ -740,7 +731,7 @@ class Admin:
             buttons.append(
                 [InlineKeyboardButton(f"👤 {user[2]} (ID: {user[0]})", callback_data=f"admin_user_{user[0]}")])
         buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_back")])
-        buttons.append([InlineKeyboardButton("🏠 В основное меню", callback_data="start")])  # Добавленная кнопка
+        buttons.append([InlineKeyboardButton("🏠 В основное меню", callback_data="start")])
         await reply_to_update(update, "📝 Заявки на одобрение:", create_keyboard(buttons))
 
     async def handle_approve_reject(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -789,7 +780,7 @@ class Admin:
             buttons.append([
                 InlineKeyboardButton(f"{user[1]} (ID: {user[0]})", callback_data=f"admin_user_{user[0]}")])
         buttons.append([InlineKeyboardButton("◀️ Назад", callback_data="admin_back")])
-        buttons.append([InlineKeyboardButton("🏠 В основное меню", callback_data="start")])  # Добавленная кнопка
+        buttons.append([InlineKeyboardButton("🏠 В основное меню", callback_data="start")])
         kb = create_keyboard(buttons)
         await reply_to_update(update, "Зарегистрированные пользователи:", kb)
 
@@ -801,7 +792,7 @@ class Admin:
         await reply_to_update(update, "✍️ Введите сообщение для рассылки:")
 
     async def process_broadcast(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обрабатываем сообщение для рассылки (если установлен флаг)"""
+        """Обрабатываем сообщение для рассылки"""
         if not context.user_data.get('is_broadcasting'):
             return
         context.user_data['is_broadcasting'] = False
@@ -842,14 +833,10 @@ class Admin:
                 [InlineKeyboardButton("Удалить запись", callback_data=f"admin_delete_{user_id}")],
                 [InlineKeyboardButton("Редактировать запись", callback_data=f"admin_edit_{user_id}")],
                 [InlineKeyboardButton("Отправить сообщение", callback_data=f"admin_msg_{user_id}")],
-                [
-                    InlineKeyboardButton("Добавить в WL", callback_data=f"wl_add_{user_id}"),
-                    InlineKeyboardButton("Удалить из WL", callback_data=f"wl_remove_{user_id}")
-                ],
-                [
-                    InlineKeyboardButton("Добавить UFW", callback_data=f"ufw_add_{user_id}"),
-                    InlineKeyboardButton("Удалить UFW", callback_data=f"ufw_remove_{user_id}")
-                ]
+                [InlineKeyboardButton("Добавить в WL", callback_data=f"wl_add_{user_id}"),
+                 InlineKeyboardButton("Удалить из WL", callback_data=f"wl_remove_{user_id}")],
+                [InlineKeyboardButton("Добавить UFW", callback_data=f"ufw_add_{user_id}"),
+                 InlineKeyboardButton("Удалить UFW", callback_data=f"ufw_remove_{user_id}")]
             ])
         # Кнопки для неодобренных пользователей
         else:
@@ -877,24 +864,19 @@ class Admin:
         if action == 'wl':
             # Обработка whitelist действий
             sub_action = query.data.split('_')[1]
-
             if sub_action == 'add':
                 success, message = WhitelistManager.add_to_whitelist(nickname)
             elif sub_action == 'remove':
                 success, message = WhitelistManager.remove_from_whitelist(nickname)
-
             await reply_to_update(update, message)
             await self.user_management_menu(update, context, user_id)
-
         elif action == 'ufw':
             # Обработка UFW действий
             if not ip:
                 await reply_to_update(update, "IP адрес не указан для этого пользователя")
                 return
-
             sub_action = query.data.split('_')[1]
             success, message = WhitelistManager.manage_ufw_rules(ip, sub_action)
-
             await reply_to_update(update, message)
             await self.user_management_menu(update, context, user_id)
 
@@ -904,7 +886,6 @@ class Admin:
             return
         query = update.callback_query
         await query.answer()
-
         success, message = WhitelistManager.reload_whitelist()
         await reply_to_update(update, message)
 
@@ -917,6 +898,7 @@ class Admin:
         elif query.data == "admin_users":
             await self.list_users(update, context)
 
+
 # ==================== СЕРВЕР ====================
 class Server:
     def __init__(self, bot):
@@ -924,24 +906,26 @@ class Server:
 
     async def server_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Меню серверных функций"""
+        players = self.bot.minecraft_server.get_online_players()
+        menu_text = (
+            "🎮 Серверные функции\n\n"
+            f"🔹 Игроков онлайн: {players}\n"
+            "Выберите действие:"
+        )
         kb = create_keyboard([
-            [InlineKeyboardButton("Количество игроков", callback_data="server_players")],
-            [InlineKeyboardButton("Отправить сообщение в чат", callback_data="server_send_chat")],
-            [InlineKeyboardButton("Погода на сервере", callback_data="server_weather")],
-            [InlineKeyboardButton("Обновить whitelist", callback_data="server_reload_whitelist")],
+            [InlineKeyboardButton("👥 Игроки онлайн", callback_data="server_players")],
+            [InlineKeyboardButton("💬 Сообщение в чат", callback_data="server_send_chat")],
+            [InlineKeyboardButton("☀️ Управление погодой", callback_data="server_weather")],
+            [InlineKeyboardButton("🔄 Обновить whitelist", callback_data="server_reload_whitelist")],
             [InlineKeyboardButton("◀️ Назад", callback_data="admin_back")],
-            [InlineKeyboardButton("🏠 В основное меню", callback_data="start")]  # Добавленная кнопка
+            [InlineKeyboardButton("🏠 В основное меню", callback_data="start")]
         ])
-        await reply_to_update(update, "Серверные функции:", kb)
+        await reply_to_update(update, menu_text, kb)
 
     async def get_players_count(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получение количества игроков онлайн"""
-        try:
-            # Здесь вызов функции из serv_status.py
-            players = server.get_online_players()
-            await reply_to_update(update, f"Игроков онлайн: {players}")
-        except Exception as e:
-            await reply_to_update(update, f"Ошибка: {e}")
+        players = self.bot.minecraft_server.get_online_players()
+        await reply_to_update(update, players)
 
     async def send_chat_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отправка сообщения в игровой чат"""
@@ -951,28 +935,35 @@ class Server:
     async def process_chat_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка сообщения для чата"""
         message = update.message.text
-        try:
-            server.server.send_chat_message(message)
-            await reply_to_update(update, "Сообщение отправлено в игровой чат!")
-        except Exception as e:
-            await reply_to_update(update, f"Ошибка: {e}")
+        success = self.bot.minecraft_server.send_chat_message(message)
+        if success:
+            await reply_to_update(update, "✅ Сообщение отправлено в игровой чат!")
+        else:
+            await reply_to_update(update, "❌ Не удалось отправить сообщение")
         return ConversationHandler.END
 
-    async def get_weather(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получение погоды на сервере"""
-        try:
-            weather = server.server.get_weather()
-            await reply_to_update(update, f"Погода на сервере: {weather}")
-        except Exception as e:
-            await reply_to_update(update, f"Ошибка: {e}")
+    async def get_weather_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Меню управления погодой"""
+        kb = create_keyboard([
+            [InlineKeyboardButton("☀️ Ясно", callback_data="weather_clear")],
+            [InlineKeyboardButton("🌧 Дождь", callback_data="weather_rain")],
+            [InlineKeyboardButton("⛈ Гроза", callback_data="weather_thunder")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="admin_server")]
+        ])
+        await reply_to_update(update, "Выберите тип погоды:", kb)
+
+    async def set_weather(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Установка погоды"""
+        query = update.callback_query
+        weather_type = query.data.split('_')[1]
+        success, message = self.bot.minecraft_server.set_weather(weather_type)
+        await reply_to_update(update, message)
+        await self.server_menu(update, context)
 
     async def reload_whitelist(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Перезагрузка whitelist"""
-        try:
-            server.whitelist.reload()
-            await reply_to_update(update, "Whitelist перезагружен!")
-        except Exception as e:
-            await reply_to_update(update, f"Ошибка: {e}")
+        success, message = WhitelistManager.reload_whitelist()
+        await reply_to_update(update, message)
 
 
 # ==================== СЕРВИС ====================
@@ -982,51 +973,45 @@ class Service:
 
     async def service_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Меню сервисных функций"""
+        status = self.bot.server_service.get_server_status()
+        stats = self.bot.server_service.get_server_stats()
+        status_text = (
+            f"🛠 Сервисные функции\n\n"
+            f"🔹 Статус: {status}\n"
+            f"🔹 CPU: {stats.get('cpu', 'N/A')}\n"
+            f"🔹 RAM: {stats.get('ram', 'N/A')}\n"
+            f"🔹 TPS: {stats.get('tps', 'N/A')}\n"
+            f"🔹 Размер мира: {self.bot.server_service.get_world_size()}"
+        )
         kb = create_keyboard([
-            [InlineKeyboardButton("Копия мира", callback_data="service_backup")],
-            [InlineKeyboardButton("Включение сервера", callback_data="service_start")],
-            [InlineKeyboardButton("Перезагрузка сервера", callback_data="service_restart")],
-            [InlineKeyboardButton("Выключение сервера", callback_data="service_stop")],
+            [InlineKeyboardButton("🔄 Копия мира", callback_data="service_backup")],
+            [InlineKeyboardButton("🟢 Включение сервера", callback_data="service_start")],
+            [InlineKeyboardButton("🟠 Перезагрузка сервера", callback_data="service_restart")],
+            [InlineKeyboardButton("🔴 Выключение сервера", callback_data="service_stop")],
             [InlineKeyboardButton("◀️ Назад", callback_data="admin_back")],
-            [InlineKeyboardButton("🏠 В основное меню", callback_data="start")]  # Добавленная кнопка
+            [InlineKeyboardButton("🏠 В основное меню", callback_data="start")]
         ])
-        await reply_to_update(update, "Сервисные функции:", kb)
+        await reply_to_update(update, status_text, kb)
 
     async def backup_world(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Создание копии мира"""
-        try:
-            # Запуск скрипта backup.sh
-            os.system("sh serv/scripts/backup.sh")
-            await reply_to_update(update, "Копия мира создана!")
-        except Exception as e:
-            await reply_to_update(update, f"Ошибка: {e}")
+        success, message = self.bot.server_service.backup_world()
+        await reply_to_update(update, message)
 
     async def start_server(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Запуск сервера"""
-        try:
-            # Запуск скрипта start.sh
-            os.system("sh serv/scripts/start.sh")
-            await reply_to_update(update, "Сервер запускается...")
-        except Exception as e:
-            await reply_to_update(update, f"Ошибка: {e}")
+        success, message = self.bot.server_service.start_server()
+        await reply_to_update(update, message)
 
     async def restart_server(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Перезагрузка сервера"""
-        try:
-            # Запуск скрипта restart.sh
-            os.system("sh serv/scripts/restart.sh")
-            await reply_to_update(update, "Сервер перезагружается...")
-        except Exception as e:
-            await reply_to_update(update, f"Ошибка: {e}")
+        success, message = self.bot.server_service.restart_server()
+        await reply_to_update(update, message)
 
     async def stop_server(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Остановка сервера"""
-        try:
-            # Запуск скрипта stop.sh
-            os.system("sh serv/scripts/stop.sh")
-            await reply_to_update(update, "Сервер останавливается...")
-        except Exception as e:
-            await reply_to_update(update, f"Ошибка: {e}")
+        success, message = self.bot.server_service.stop_server()
+        await reply_to_update(update, message)
 
 
 # ==================== WHITELIST ====================
@@ -1063,7 +1048,7 @@ class WhitelistManager:
 
     @staticmethod
     def manage_ufw_rules(ip, action='add'):
-        """Управление UFW правилами (без валидации IP)"""
+        """Управление UFW правилами"""
         try:
             if action == 'add':
                 from server_menu.whitelist import add_ufw_rules

@@ -48,7 +48,6 @@ class Service:
                 capture_output=True,
                 text=True
             )
-
             if f"{self.screen_name}" in result.stdout:
                 return "Сервер работает"
             return "Сервер остановлен"
@@ -65,7 +64,6 @@ class Service:
     def get_server_stats(self):
         """Получение статистики сервера (CPU, RAM, TPS)"""
         stats = {}
-
         # Получаем PID процесса Java (предполагаем, что сервер - это Java процесс)
         try:
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):

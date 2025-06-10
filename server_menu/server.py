@@ -45,31 +45,23 @@ class Server:
         """Получение списка онлайн игроков"""
         temp_file = Path("/tmp/minecraft_players.txt")
         cmd = f"screen -S {self.screen_name} -p 0 -X stuff \"list^M\""
-
         try:
             # Очищаем временный файл
             if temp_file.exists():
                 temp_file.unlink()
-
             # Отправляем команду list
             subprocess.run(cmd, shell=True, check=True, executable='/bin/bash')
-
             # Даем время на выполнение команды
             import time
             time.sleep(1)
-
             # Парсим вывод из логов
             if not temp_file.exists():
                 return "Не удалось получить список игроков"
-
             with open(temp_file, 'r') as f:
                 log_lines = f.readlines()
-
             for line in reversed(log_lines):  # Ищем последнее вхождение
                 if "There are" in line:
                     return line.strip()
-
             return "Игроки не найдены"
-
         except Exception as e:
             return f"Ошибка: {str(e)}"

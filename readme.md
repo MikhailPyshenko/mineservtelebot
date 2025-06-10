@@ -99,3 +99,16 @@ mineservtelebot/
 							├── \ОДОБРИТЬ\ - МЕНЯЕТ ДАННЫЕ ПОЛЬЗОВАТЕЛЯ, НО ПЕРЕД ЭТИМ УДАЛЯЕТ СТАРЫЕ ДАННЫЕ (whitelist.py)
 							└── \ОТКЛОНИТЬ\ - ОТМЕНЯЕТ ИЗМЕНЕНИЯ, ЗАКРЫВАЕТ ДИАЛОГ
 ```
+
+## Пример .env файла
+```shell
+# Токен Telegram-бота, полученный у BotFather
+BOT_TOKEN=1234567890:QWErTY1u23I4o5p6_as7d8FGhJK9OG1H23j
+ADMIN_IDS=123456789,987654321
+
+# Путь к базе данных SQLite
+DB_PATH=/tmp/mineservtelebot/users.db
+
+# Дополнительные настройки (INFO \ DEBUG)
+LOG_LEVEL=DEBUG
+```

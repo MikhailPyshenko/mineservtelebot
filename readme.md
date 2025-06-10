@@ -1,15 +1,22 @@
-# СОЗДАНИЕ ВИРТУАЛЬНОГО ОКРУЖЕНИЯ
+# mineservtelebot
+
+---
+
+# Запуск:
+### СОЗДАНИЕ ВИРТУАЛЬНОГО ОКРУЖЕНИЯ
 python3 -m venv /root/minecraft/fabric_serv/help/mineservtelebot/venv
-# ВКЛЮЧЕНИЕ ВИРТУАЛЬНОГО ОКРУЖЕНИЯ
+### ВКЛЮЧЕНИЕ ВИРТУАЛЬНОГО ОКРУЖЕНИЯ
 source /root/minecraft/fabric_serv/help/mineservtelebot/venv/bin/activate
-# УСТАНОВКА ЗАВИСИМОСТЕЙ
+### УСТАНОВКА ЗАВИСИМОСТЕЙ
 pip install python-telegram-bot sqlalchemy python-dotenv
-# РУЧНОЕ ВКЛЮЧЕНИЕ
+### РУЧНОЕ ВКЛЮЧЕНИЕ
 python /root/minecraft/fabric_serv/help/mineservtelebot/mineservtelebot.py
-# ВКЛЮЧЕНИЕ В ФОНЕ
+### ВКЛЮЧЕНИЕ В ФОНЕ
 screen -S mineservtelebot_start_py -d -m bash -c "source /root/minecraft/fabric_serv/help/mineservtelebot/venv/bin/activate && python /root/minecraft/fabric_serv/help/mineservtelebot/mineservtelebot.py"
 
-# СТРУКТУРА БОТА mineservtelebot
+---
+
+## СТРУКТУРА БОТА mineservtelebot
 mineservtelebot/
 ├── .env                  			# ПЕРЕМННЫЕ
 ├── mineservtelebot.py              # ЗАПУСК БОТА И ОСНОВНОЙ ФАЙЛ С ЛОГИКОЙ
@@ -25,7 +32,9 @@ mineservtelebot/
 		├── stop.sh  				# ВКЛЮЧАЕТ СЕРВЕР
 		└── restart.sh  			# ПЕРЕЗАГРУЖАЕТ СЕРВЕР
 
-# ФУНКЦИОНАЛ БОТА mineservtelebot
+---
+
+## ФУНКЦИОНАЛ БОТА mineservtelebot
 \ОСНОВНОЕ МЕНЮ\ - ОСНОВНОЕ МЕНЮ - ВЫЗЫВАЕТСЯ КОМАНДОЙ К БОТУ /start 
 ├── \ВЫЙТИ\ - ЗАКРЫВАЕТ МЕНЮ
 ├── \ПРИВЕТСТВИЕ\ - ВЫЗЫВАЕТСЯ КОМАНДОЙ К БОТУ /hello 

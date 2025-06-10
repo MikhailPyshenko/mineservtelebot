@@ -10,7 +10,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
     MessageHandler, filters, BaseHandler
 from server_menu.service import Service as ServerService
 from server_menu.server import Server as MinecraftServer
-
+from server_menu.whitelist import add_to_whitelist, remove_from_whitelist, reload_whitelist, add_ufw_rules, remove_ufw_rules
 
 # ==================== УТИЛИТЫ ====================
 async def reply_to_update(update: Update, text: str, reply_markup=None, show_alert=False, parse_mode=None):
@@ -176,8 +176,8 @@ class MinecraftBot:
         self.application = ApplicationBuilder().token(Config.BOT_TOKEN).build()
         self.whitelist_manager = WhitelistManager()
         # Инициализация серверных модулей
-        self.server_service = ServerService(screen_name=os.getenv("SCREEN_NAME", "minecraft"), server_dir=os.getenv("SERVER_DIR", "/path/to/server"))
-        self.minecraft_server = MinecraftServer(screen_name=os.getenv("SCREEN_NAME", "minecraft"))
+        self.server_service = ServerService(self)
+        self.minecraft_server = MinecraftServer(self)
         # Инициализация компонентов бота
         self.service = Service(self)  # Сервисные функции
         self.server = Server(self)  # Серверные функции
@@ -389,9 +389,12 @@ class MinecraftBot:
         return ConversationHandler(
             entry_points=[CallbackQueryHandler(self.server.send_chat_message, pattern="^server_send_chat$")],
             states={"server_chat_msg_input": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.server.process_chat_message)]},
-            fallbacks=[CommandHandler("cancel", lambda u, c: reply_to_update(u, "Отправка сообщения отменена")),
-                       CallbackQueryHandler(lambda u, c: reply_to_update(u, "Отправка сообщения отменена"), pattern="^cancel$")],
-            per_message=False)
+            fallbacks=[
+                CommandHandler("cancel", lambda u, c: reply_to_update(u, "Отправка сообщения отменена")),
+                CallbackQueryHandler(lambda u, c: reply_to_update(u, "Отправка сообщения отменена"), pattern="^cancel$")
+            ],
+            per_message=False
+        )
 
     def _create_service_handlers(self):
         """Создание обработчиков для сервисных команд"""
@@ -906,11 +909,8 @@ class Server:
 
     async def server_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Меню серверных функций"""
-        players = self.bot.minecraft_server.get_online_players()
         menu_text = (
-            "🎮 Серверные функции\n\n"
-            f"🔹 Игроков онлайн: {players}\n"
-            "Выберите действие:"
+            "🎮 Серверные функции\n"
         )
         kb = create_keyboard([
             [InlineKeyboardButton("👥 Игроки онлайн", callback_data="server_players")],
@@ -928,18 +928,19 @@ class Server:
         await reply_to_update(update, players)
 
     async def send_chat_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Отправка сообщения в игровой чат"""
+        """Запрос на ввод сообщения"""
         await reply_to_update(update, "Введите сообщение для отправки в игровой чат:")
         return "server_chat_msg_input"
 
     async def process_chat_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка сообщения для чата"""
-        message = update.message.text
-        success = self.bot.minecraft_server.send_chat_message(message)
-        if success:
-            await reply_to_update(update, "✅ Сообщение отправлено в игровой чат!")
-        else:
-            await reply_to_update(update, "❌ Не удалось отправить сообщение")
+        """Отправка сообщения в игровой чат"""
+        message = update.message.text.strip()
+        if not message:
+            await reply_to_update(update, "⚠️ Ошибка: сообщение не может быть пустым.")
+            return "server_chat_msg_input"
+        success, response = MinecraftServer().send_chat_message(message)
+        await reply_to_update(update, response)
+
         return ConversationHandler.END
 
     async def get_weather_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1020,8 +1021,7 @@ class WhitelistManager:
     def add_to_whitelist(nickname):
         """Добавление игрока в whitelist"""
         try:
-            from server_menu.whitelist import add_to_whitelist as whitelist_add
-            whitelist_add(nickname)
+            add_to_whitelist(nickname)
             return True, f"Игрок {nickname} добавлен в whitelist"
         except Exception as e:
             return False, f"Ошибка при добавлении в whitelist: {str(e)}"
@@ -1030,8 +1030,7 @@ class WhitelistManager:
     def remove_from_whitelist(nickname):
         """Удаление игрока из whitelist"""
         try:
-            from server_menu.whitelist import remove_from_whitelist as whitelist_remove
-            whitelist_remove(nickname)
+            remove_from_whitelist(nickname)
             return True, f"Игрок {nickname} удалён из whitelist"
         except Exception as e:
             return False, f"Ошибка при удалении из whitelist: {str(e)}"
@@ -1040,8 +1039,7 @@ class WhitelistManager:
     def reload_whitelist():
         """Перезагрузка whitelist"""
         try:
-            from server_menu.whitelist import reload_whitelist as whitelist_reload
-            whitelist_reload()
+            reload_whitelist()
             return True, "Whitelist перезагружен"
         except Exception as e:
             return False, f"Ошибка при перезагрузке whitelist: {str(e)}"
@@ -1051,11 +1049,9 @@ class WhitelistManager:
         """Управление UFW правилами"""
         try:
             if action == 'add':
-                from server_menu.whitelist import add_ufw_rules
                 add_ufw_rules(ip)
                 return True, f"UFW правила добавлены для IP {ip}"
             else:
-                from server_menu.whitelist import remove_ufw_rules
                 remove_ufw_rules(ip)
                 return True, f"UFW правила удалены для IP {ip}"
         except Exception as e:

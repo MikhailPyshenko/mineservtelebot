@@ -14,7 +14,9 @@ pip install python-telegram-bot sqlalchemy python-dotenv psutil
 python /root/minecraft/mineservtelebot/mineservtelebot.py
 ### ВКЛЮЧЕНИЕ В ФОНЕ
 screen -S mineservtelebot_start_py -d -m bash -c "source /root/minecraft/mineservtelebot/venv/bin/activate && python /root/minecraft/mineservtelebot/mineservtelebot.py"
-
+### ПРЕДВАРИТЕЛЬНАЯ РАБОТА СО СКРИПТАМИ
+chmod +x /root/minecraft/mineservtelebot/server_menu/scripts/start.sh
+dos2unix /root/minecraft/mineservtelebot/server_menu/scripts/start.sh
 ---
 
 ## СТРУКТУРА БОТА mineservtelebot
@@ -117,8 +119,13 @@ BOT_TOKEN=1234567890:QWErTY1u23I4o5p6_as7d8FGhJK9OG1H23j
 ADMIN_IDS=123456789,987654321
 
 # Путь к базе данных SQLite
-DB_PATH=/tmp/users.db
+DB_PATH=/root/minecraft/mineservtelebot/db/mineservtelebot.db
 
-# Настройки логирования (INFO \ DEBUG)
+# Дополнительные настройки (INFO \ DEBUG)
 LOG_LEVEL=DEBUG
+
+# Для сервисных функций
+SCREEN_NAME=minecraft_server
+SERVER_DIR=/root/minecraft/minecraft_server
+SCRIPTS_DIR=/root/minecraft/mineservtelebot/server_menu/scripts
 ```

@@ -2,66 +2,59 @@ import os
 import subprocess
 import re
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 class Server:
-    def __init__(self, screen_name="minecraft"):
-        self.screen_name = screen_name
-        self.screen_cmd = f"screen -S {self.screen_name} -p 0 -X stuff"
+    def __init__(self, bot):
+        """Инициализация серверного модуля"""
+        self.bot = bot
+        # Загрузка конфигурации из .env
+        self.screen_name = os.getenv("SCREEN_NAME")  # Имя screen сессии
+        self.server_dir = Path(os.getenv("SERVER_DIR"))  # Директория сервера
+        self.scripts_dir = Path(os.getenv("SCRIPTS_DIR"))  # Директория скриптов
+        # Валидация конфигурации
+        if not self.screen_name:
+            raise ValueError("SCREEN_NAME не указан в .env")
+        if not self.server_dir.exists():
+            raise ValueError(f"Директория сервера {self.server_dir} не существует")
+        if not self.scripts_dir.exists():
+            raise ValueError(f"Директория скриптов {self.scripts_dir} не существует")
 
-    def _send_screen_command(self, command):
-        """Отправка команды в screen сессию"""
-        full_cmd = f'{self.screen_cmd} "{command}^M"'
+    def _run_screen_command(self, command):
+        """Универсальный метод отправки команд в screen сессию"""
         try:
+            full_cmd = f'screen -S {self.screen_name} -p 0 -X stuff "{command}^M"'
             subprocess.run(full_cmd, shell=True, check=True, executable='/bin/bash')
-            return True
+            return True, "Команда успешно выполнена"
         except subprocess.CalledProcessError as e:
-            print(f"Ошибка отправки команды в screen: {e}")
-            return False
+            return False, f"Ошибка выполнения команды: {str(e)}"
 
     def send_chat_message(self, message):
-        """Отправка сообщения всем игрокам в чат"""
-        cmd = f'say {message}'
-        return self._send_screen_command(cmd)
+        """Отправка сообщения в глобальный чат"""
+        return self._run_screen_command(f'say {message}')
 
     def send_private_message(self, player, message):
         """Отправка приватного сообщения игроку"""
-        cmd = f'tell {player} {message}'
-        return self._send_screen_command(cmd)
+        return self._run_screen_command(f'tell {player} {message}')
 
     def set_weather(self, weather_type):
         """Установка погоды на сервере"""
+        weather_type = weather_type.lower()
         valid_weather = ["clear", "rain", "thunder"]
-        if weather_type.lower() not in valid_weather:
+        if weather_type not in valid_weather:
             return False, "Неверный тип погоды. Допустимо: clear, rain, thunder"
-
-        cmd = f'weather {weather_type.lower()}'
-        success = self._send_screen_command(cmd)
+        success, msg = self._run_screen_command(f'weather {weather_type}')
         if success:
             return True, f"Погода изменена на {weather_type}"
-        return False, "Ошибка изменения погоды"
+        return False, f"Ошибка изменения погоды: {msg}"
 
     def get_online_players(self):
         """Получение списка онлайн игроков"""
-        temp_file = Path("/tmp/minecraft_players.txt")
-        cmd = f"screen -S {self.screen_name} -p 0 -X stuff \"list^M\""
-        try:
-            # Очищаем временный файл
-            if temp_file.exists():
-                temp_file.unlink()
-            # Отправляем команду list
-            subprocess.run(cmd, shell=True, check=True, executable='/bin/bash')
-            # Даем время на выполнение команды
-            import time
-            time.sleep(1)
-            # Парсим вывод из логов
-            if not temp_file.exists():
-                return "Не удалось получить список игроков"
-            with open(temp_file, 'r') as f:
-                log_lines = f.readlines()
-            for line in reversed(log_lines):  # Ищем последнее вхождение
-                if "There are" in line:
-                    return line.strip()
-            return "Игроки не найдены"
-        except Exception as e:
-            return f"Ошибка: {str(e)}"
+        return self._run_screen_command("list")
+
+    def execute_command(self, command):
+        """Выполнение произвольной команды на сервере"""
+        return self._run_screen_command(command)

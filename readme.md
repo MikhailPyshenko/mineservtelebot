@@ -4,15 +4,15 @@
 
 # Запуск:
 ### СОЗДАНИЕ ВИРТУАЛЬНОГО ОКРУЖЕНИЯ
-python3 -m venv /root/minecraft/fabric_serv/help/mineservtelebot/venv
+python3 -m venv /root/minecraft/mineservtelebot/venv
 ### ВКЛЮЧЕНИЕ ВИРТУАЛЬНОГО ОКРУЖЕНИЯ
-source /root/minecraft/fabric_serv/help/mineservtelebot/venv/bin/activate
+source /root/minecraft/mineservtelebot/venv/bin/activate
 ### УСТАНОВКА ЗАВИСИМОСТЕЙ
 pip install python-telegram-bot sqlalchemy python-dotenv
 ### РУЧНОЕ ВКЛЮЧЕНИЕ
-python /root/minecraft/fabric_serv/help/mineservtelebot/mineservtelebot.py
+python /root/minecraft/mineservtelebot/mineservtelebot.py
 ### ВКЛЮЧЕНИЕ В ФОНЕ
-screen -S mineservtelebot_start_py -d -m bash -c "source /root/minecraft/fabric_serv/help/mineservtelebot/venv/bin/activate && python /root/minecraft/fabric_serv/help/mineservtelebot/mineservtelebot.py"
+screen -S mineservtelebot_start_py -d -m bash -c "source /root/minecraft/mineservtelebot/venv/bin/activate && python /root/minecraft/mineservtelebot/mineservtelebot.py"
 
 ---
 

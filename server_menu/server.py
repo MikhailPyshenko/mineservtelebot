@@ -11,9 +11,9 @@ class Server:
         """Инициализация серверного модуля"""
         self.bot = bot
         # Загрузка конфигурации из .env
-        self.screen_name = os.getenv("SCREEN_NAME")  # Имя screen сессии
-        self.server_dir = Path(os.getenv("SERVER_DIR"))  # Директория сервера
-        self.scripts_dir = Path(os.getenv("SCRIPTS_DIR"))  # Директория скриптов
+        self.screen_name = os.getenv("SCREEN_NAME")
+        self.server_dir = Path(os.getenv("SERVER_DIR"))
+        self.scripts_dir = Path(os.getenv("SCRIPTS_DIR"))
         # Валидация конфигурации
         if not self.screen_name:
             raise ValueError("SCREEN_NAME не указан в .env")
@@ -65,10 +65,6 @@ class Server:
             return False, "Неверное время суток. Допустимо: day, night, noon, midnight"
         return self._run_screen_command(f"time set {time_of_day}")
 
-    def ban_player(self, player):
-        """Позволяет забанить игрока"""
-        return self._run_screen_command(f"ban {player}")
-
     def enable_pvp(self):
         """Включает PVP"""
         return self._run_screen_command("gamerule pvp true")
@@ -83,3 +79,43 @@ class Server:
         if difficulty.lower() not in valid_difficulties:
             return False, "Неверная сложность. Допустимо: peaceful, easy, normal, hard"
         return self._run_screen_command(f"difficulty {difficulty}")
+
+    def ban_player(self, player):
+        """Блокировка игрока"""
+        return self._run_screen_command(f"ban {player}")
+
+    def unban_player(self, player):
+        """Снятие блокировки с игрока"""
+        return self._run_screen_command(f"pardon {player}")
+
+    def get_banned_players(self):
+        """Получение списка забаненных игроков"""
+        success, response = self._run_screen_command("banlist")
+        if not success:
+            return False, response
+        banned_players = []
+        for line in response.split('\n'):
+            line = line.strip()
+            if line and not line.startswith("There are"):
+                banned_players.append(line.split(' - ')[0])
+        return True, banned_players
+
+    def ban_ip(self, ip_address):
+        """Блокировка IP-адреса"""
+        return self._run_screen_command(f"ban-ip {ip_address}")
+
+    def pardon_ip(self, ip_address):
+        """Снятие блокировки IP-адреса"""
+        return self._run_screen_command(f"pardon-ip {ip_address}")
+
+    def get_banned_ips(self):
+        """Получение списка забаненных IP"""
+        success, response = self._run_screen_command("banlist ips")
+        if not success:
+            return False, response
+        banned_ips = []
+        for line in response.split('\n'):
+            line = line.strip()
+            if line and not line.startswith("There are"):
+                banned_ips.append(line.split(' - ')[0])
+        return True, banned_ips

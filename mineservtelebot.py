@@ -3,47 +3,49 @@ import re
 import sqlite3
 import logging
 import ipaddress
-import time
-import subprocess
 from pathlib import Path
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, MessageHandler, filters, BaseHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, \
+    MessageHandler, filters, BaseHandler
 from server_menu.service import Service as ServerService
 from server_menu.server import Server as MinecraftServer
-from server_menu.whitelist import add_to_whitelist, remove_from_whitelist, reload_whitelist, add_ufw_rules, remove_ufw_rules
+from server_menu.whitelist import add_to_whitelist, remove_from_whitelist, reload_whitelist, add_ufw_rules, \
+    remove_ufw_rules
+
 
 # ==================== УТИЛИТЫ ====================
-async def reply_to_update(update: Update, text: str, reply_markup=None, show_alert=False, parse_mode=None):
-    """Универсальный и безопасный метод отправки сообщений"""
+async def reply_to_update(update: Update, text: str, reply_markup=None, show_alert=False, parse_mode="HTML"):
+    """Безопасная отправка сообщений с автоматическим экранированием"""
     try:
         if not update:
             logger.error("Пустой update объект")
             return
-
+        # Автоматическое экранирование специальных символов
+        safe_text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         if update.message:
             await update.message.reply_text(
-                text=text,
+                text=safe_text,
                 reply_markup=reply_markup,
-                parse_mode="Markdown",
+                parse_mode=parse_mode,
                 disable_web_page_preview=True
             )
         elif update.callback_query:
             if show_alert:
-                await update.callback_query.answer(text, show_alert=show_alert)
+                await update.callback_query.answer(safe_text, show_alert=show_alert)
             else:
                 try:
                     await update.callback_query.edit_message_text(
-                        text=text,
+                        text=safe_text,
                         reply_markup=reply_markup,
-                        parse_mode="Markdown",
+                        parse_mode=parse_mode,
                         disable_web_page_preview=True
                     )
                     await update.callback_query.answer()
                 except Exception as e:
                     logger.warning(f"Не удалось изменить сообщение: {e}")
                     await update.effective_message.reply_text(
-                        text=text,
+                        text=safe_text,
                         reply_markup=reply_markup,
                         parse_mode=parse_mode
                     )
@@ -82,14 +84,14 @@ class Config:
     SCRIPTS_DIR = Path(os.getenv("SCRIPTS_DIR"))
 
     # Состояния ConversationHandler
-    (REG_NICK, REG_IP, REG_CONFIRM, EDIT_NICK, EDIT_IP, ADMIN_SENDMSG, ADMIN_USER_SELECT, SERVER_MSG_INPUT,
-     BROADCAST_MSG_INPUT) = range(9)
+    (REG_NICK, REG_IP, REG_CONFIRM, REG_RESTART, EDIT_NICK, EDIT_IP, ADMIN_SENDMSG, ADMIN_USER_SELECT, SERVER_MSG_INPUT,
+     BROADCAST_MSG_INPUT) = range(10)
 
     TEXTS = {
         "welcome": "Добро пожаловать в основной бот меню!",
         "hello": "Привет!\nЭто бот для управления сервером Minecraft.\nПроект бота на [GitHub](https://github.com/MikhailPyshenko/mineservtelebot)",
         "readme": "Информация о сервере:\n- Версия - 1.21.4\n- Загрузчик - Fabric 0.16\n- Доступ к серверу по IP устройства\n- На сервере аутентификация по нику\n",
-        "help": "--- Команды бота ---\n/start - Главное меню\n/hello - Приветствие\n/readme - О сервере\n/help - Инструкция\n/reg - Регистрация\n/unreg - Отмена регистрации\n/user - Меню пользователя\n \n--- Инструкция по регистрации ---\n1. Зарегистрируйтесь, команда /reg\n1.1. Выберите ник, он будет использоваться в игре\n1.2. Введите IP ([Узнать свой IP](https://2ip.ru/)) устройства с которого будете играть\n2. Дождитесь одобрения заявки на регистрацию\n3. После регистрации вы получите доступ к профилю где сможете изменить ник, IP и узнать состояние сервера",
+        "help": "--- Команды бота ---\n/start - Главное меню\n/help - Инструкция\n/reg - Регистрация\n/unreg - Отмена регистрации\n/user - Меню пользователя\n \n--- Инструкция по регистрации ---\n1. Зарегистрируйтесь, команда /reg\n1.1. Выберите ник, он будет использоваться в игре\n1.2. Введите IP ([Узнать свой IP](https://2ip.ru/)) устройства с которого будете играть\n2. Дождитесь одобрения заявки на регистрацию\n3. После регистрации вы получите доступ к профилю где сможете изменить ник, IP и узнать состояние сервера",
         "not_registered": "Вы не зарегистрированы. Пожалуйста, зарегистрируйтесь.",
         "pending_approval": "Ваша заявка на регистрацию ожидает одобрения.",
         "already_approved": "Вы уже зарегистрированы и одобрены.",
@@ -253,9 +255,7 @@ class MinecraftBot:
             CallbackQueryHandler(self.service.logging_off, pattern="^service_logging_off$"),
             self.service._create_command_handler(),
         ]
-        # Убедимся, что все обработчики валидны
-        valid_handlers = [h for h in handlers if isinstance(h, BaseHandler)]
-        self.application.add_handlers(valid_handlers)
+        self.application.add_handlers(handlers)
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Главное меню бота"""
@@ -309,20 +309,38 @@ class MinecraftBot:
             logger.error(f"Ошибка при удалении сообщения: {e}")
 
     def _create_registration_handler(self):
-        """Создание обработчика регистрации"""
+        """Создаем надежный обработчик регистрации"""
         registration = Registration(self)
+
         return ConversationHandler(
-            entry_points=[CommandHandler("reg", registration.start),
-                          CallbackQueryHandler(registration.start, pattern="^reg_start$")],
+            entry_points=[
+                CommandHandler("reg", registration.start),
+                CallbackQueryHandler(registration.start, pattern="^reg_new$"),
+                CallbackQueryHandler(registration.start, pattern="^reg_start$")
+            ],
             states={
-                Config.REG_NICK: [MessageHandler(filters.TEXT & ~filters.COMMAND, registration.process_nick)],
-                Config.REG_IP: [MessageHandler(filters.TEXT & ~filters.COMMAND, registration.process_ip)],
-                Config.REG_CONFIRM: [CallbackQueryHandler(registration.confirm, pattern="^reg_confirm_"),
-                                     CallbackQueryHandler(registration.cancel_registration, pattern="^reg_confirm_no$")]
+                Config.REG_RESTART: [
+                    CallbackQueryHandler(registration.start, pattern="^reg_new$"),
+                    CallbackQueryHandler(registration.cancel, pattern="^reg_cancel$")
+                ],
+                Config.REG_NICK: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, registration.process_nick)
+                ],
+                Config.REG_IP: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, registration.process_ip)
+                ],
+                Config.REG_CONFIRM: [
+                    CallbackQueryHandler(registration.confirm, pattern="^reg_confirm$"),
+                    CallbackQueryHandler(registration.cancel, pattern="^reg_cancel$")
+                ]
             },
-            fallbacks=[CommandHandler("cancel", registration.cancel_registration),
-                       CallbackQueryHandler(registration.cancel_registration, pattern="^cancel$")],
-            per_message=False
+            fallbacks=[
+                CommandHandler("cancel", registration.cancel),
+                CallbackQueryHandler(registration.cancel, pattern="^cancel$"),
+                MessageHandler(filters.ALL, registration.cancel)
+            ],
+            per_message=False,
+            allow_reentry=True
         )
 
     async def _handle_unreg_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -378,11 +396,38 @@ class MinecraftBot:
             CallbackQueryHandler(admin.list_pending_requests, pattern="^admin_list_pending$"),
             CallbackQueryHandler(admin.list_users, pattern="^admin_list_users$"),
             CallbackQueryHandler(admin.start_broadcast, pattern="^admin_broadcast$"),
-            CallbackQueryHandler(admin.handle_approve_reject, pattern="^admin_(approve|reject)_"),
             CallbackQueryHandler(admin.user_management_menu, pattern="^admin_user_"),
+            CallbackQueryHandler(admin.handle_delete_user, pattern=r'^admin_delete_\d+$'),
+            CallbackQueryHandler(admin.start_send_message, pattern=r'^admin_msg_\d+$'),
             CallbackQueryHandler(admin.handle_whitelist_action, pattern="^(wl|ufw)_"),
             CallbackQueryHandler(admin.reload_whitelist, pattern="^admin_reload_wl$"),
             CallbackQueryHandler(admin.handle_back, pattern="^(admin_back|admin_users)$"),
+            CallbackQueryHandler(admin.handle_approve_reject, pattern="^admin_(approve|reject)_"),
+            ConversationHandler(
+                entry_points=[CallbackQueryHandler(admin.start_edit_nick, pattern="^admin_edit_")],
+                states={
+                    "edit_nick": [MessageHandler(filters.TEXT & ~filters.COMMAND, admin.edit_user_nick)]
+                },
+                fallbacks=[]
+            ),
+            ConversationHandler(
+                entry_points=[CallbackQueryHandler(admin.start_edit_ip, pattern="^admin_editip_")],
+                states={
+                    "edit_ip": [MessageHandler(filters.TEXT & ~filters.COMMAND, admin.edit_user_ip)]
+                },
+                fallbacks=[]
+            ),
+            ConversationHandler(
+                entry_points=[CallbackQueryHandler(admin.start_send_message, pattern=r'^admin_msg_\d+$')],
+                states={
+                    "admin_message_input": [MessageHandler(filters.TEXT & ~filters.COMMAND, admin.process_user_message)]
+                },
+                fallbacks=[
+                    CommandHandler("cancel", lambda u, c: reply_to_update(u, "Отправка сообщения отменена")),
+                    CallbackQueryHandler(lambda u, c: reply_to_update(u, "Отправка сообщения отменена"),
+                                         pattern="^cancel$")
+                ]
+            ),
             MessageHandler(filters.TEXT & ~filters.COMMAND, admin.process_broadcast),
         ]
 
@@ -401,7 +446,8 @@ class MinecraftBot:
         """Создание обработчика сообщений чата"""
         return ConversationHandler(
             entry_points=[CallbackQueryHandler(self.server.send_chat_message, pattern="^server_send_chat$")],
-            states={"server_chat_msg_input": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.server.process_chat_message)]},
+            states={"server_chat_msg_input": [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, self.server.process_chat_message)]},
             fallbacks=[
                 CommandHandler("cancel", lambda u, c: reply_to_update(u, "Отправка сообщения отменена")),
                 CallbackQueryHandler(lambda u, c: reply_to_update(u, "Отправка сообщения отменена"), pattern="^cancel$")
@@ -420,13 +466,178 @@ class MinecraftBot:
             CallbackQueryHandler(service.stop_server, pattern="^service_stop$")
         ]
 
+    async def check_active_sessions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """Проверяет и завершает активные сессии перед началом нового диалога"""
+        user_id = update.effective_user.id
+        active_session = context.user_data.get('active_session')
+        if active_session:
+            try:
+                # Завершаем предыдущий диалог
+                if active_session == 'registration':
+                    await self.registration.cancel_registration(update, context)
+                elif active_session == 'edit_nick':
+                    await self.user.cancel_edit(update, context)
+                elif active_session == 'edit_ip':
+                    await self.user.cancel_edit(update, context)
+
+                # Удаляем предыдущее сообщение с кнопками
+                if update.callback_query:
+                    await update.callback_query.message.delete()
+            except Exception as e:
+                logger.error(f"Ошибка при завершении сессии: {e}")
+
+        context.user_data['active_session'] = None
+        return True
+
 
 # ==================== РЕГИСТРАЦИЯ ====================
 class Registration:
-    """Класс для обработки регистрации пользователей"""
-
     def __init__(self, bot):
         self.bot = bot
+        self.logger = logging.getLogger(__name__)
+
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Начало процесса регистрации с проверкой существующей заявки"""
+        try:
+            user_id = update.effective_user.id
+            self.logger.info(f"Попытка регистрации пользователя {user_id}")
+            # Проверяем текущий статус пользователя
+            user = Database.get_user(user_id)
+            if user:
+                if user['approved']:
+                    msg = (
+                        "✅ Вы уже зарегистрированы и одобрены!\n"
+                        "Используйте /user для управления профилем"
+                    )
+                else:
+                    msg = (
+                        "⏳ У вас уже есть заявка на рассмотрении.\n"
+                        "Ожидайте одобрения администратора."
+                    )
+                await reply_to_update(update, msg)
+                return ConversationHandler.END
+            # Если пользователь не зарегистрирован - начинаем новую регистрацию
+            context.user_data.clear()
+            context.user_data['reg_user_id'] = user_id
+            context.user_data['reg_username'] = update.effective_user.username or ""
+            await reply_to_update(update,
+                                  "🎮 Регистрация нового игрока\n\n"
+                                  "Введите ваш внутриигровой ник:\n"
+                                  "• Только латиница, цифры и _\n"
+                                  "• От 3 до 16 символов\n"
+                                  "• Будет преобразован в нижний регистр")
+            return Config.REG_NICK
+        except Exception as e:
+            self.logger.error(f"Ошибка начала регистрации: {str(e)}")
+            await reply_to_update(update, "⚠️ Произошла ошибка при старте регистрации")
+            return ConversationHandler.END
+
+    async def process_nick(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Обработка введенного ника с использованием валидации"""
+        try:
+            nick = update.message.text.strip()
+            self.logger.info(f"Пользователь {update.effective_user.id} ввел ник: {nick}")
+            # Используем метод валидации
+            is_valid, message = self.validate_nickname(nick)
+            if not is_valid:
+                await reply_to_update(update, message)
+                return Config.REG_NICK
+            # Сохраняем валидный ник
+            context.user_data['reg_nick'] = nick.lower()
+            # Запрашиваем IP
+            await reply_to_update(update,
+                                  "🌐 Теперь введите ваш IP-адрес:\n"
+                                  "• Можно узнать на сайтах типа 2ip.ru\n"
+                                  "• Формат: 123.45.67.89 или IPv6\n\n"
+                                  "⚠️ Этот IP будет использоваться для доступа к серверу")
+            return Config.REG_IP
+        except Exception as e:
+            self.logger.error(f"Ошибка обработки ника: {str(e)}")
+            await reply_to_update(update, "⚠️ Ошибка обработки ника. Попробуйте еще раз.")
+            return Config.REG_NICK
+
+    async def process_ip(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Обработка введенного IP-адреса с использованием валидации"""
+        try:
+            ip = update.message.text.strip()
+            self.logger.info(f"Пользователь {update.effective_user.id} ввел IP: {ip}")
+            # Используем метод валидации IP
+            is_valid, message = self.validate_ip(ip)
+            if not is_valid:
+                await reply_to_update(update, message)
+                return Config.REG_IP
+            context.user_data['reg_ip'] = ip
+            # Подтверждение данных
+            kb = [
+                [InlineKeyboardButton("✅ Подтвердить", callback_data="reg_confirm")],
+                [InlineKeyboardButton("❌ Отменить", callback_data="reg_cancel")]
+            ]
+            await reply_to_update(update,
+                                  f"🔹 Проверьте введенные данные:\n\n"
+                                  f"👤 Ник: {context.user_data['reg_nick']}\n"
+                                  f"🌐 IP: {context.user_data['reg_ip']}\n\n"
+                                  "Всё верно?",
+                                  reply_markup=InlineKeyboardMarkup(kb))
+            return Config.REG_CONFIRM
+        except Exception as e:
+            self.logger.error(f"Ошибка обработки IP: {str(e)}")
+            await reply_to_update(update, "⚠️ Ошибка обработки IP. Попробуйте еще раз.")
+            return Config.REG_IP
+
+    async def confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Подтверждение регистрации с безопасным форматированием"""
+        query = update.callback_query
+        await query.answer()
+        if query.data == "reg_confirm":
+            data = context.user_data
+            user_id = data['reg_user_id']
+            self.logger.info(f"Подтверждение регистрации пользователя {user_id}")
+            # Проверка существующей регистрации
+            if Database.get_user(user_id):
+                self.logger.warning(f"Попытка повторной регистрации пользователя {user_id}")
+                await reply_to_update(update, "⚠️ Вы уже зарегистрированы!")
+                return ConversationHandler.END
+            # Сохраняем пользователя
+            Database.add_user(
+                user_id,
+                data['reg_username'],
+                data['reg_nick'],
+                data['reg_ip']
+            )
+            self.logger.info(
+                f"Пользователь {user_id} добавлен в базу данных (ник: {data['reg_nick']}, IP: {data['reg_ip']})")
+            # Формируем сообщение для админов
+            admin_msg = (
+                "🆕 Новая заявка на регистрацию\n\n"
+                f"👤 Пользователь: {data['reg_username'] or 'нет username'}\n"
+                f"🆔 ID: <code>{user_id}</code>\n"
+                f"🎮 Ник: <code>{data['reg_nick']}</code>\n"
+                f"🌐 IP: <code>{data['reg_ip']}</code>"
+            )
+            # Уведомляем админов
+            self.logger.info(f"Отправка уведомления админам о новой заявке от пользователя {user_id}")
+            await self.bot.admin.notify_admins(admin_msg, user_id)
+            # Ответ пользователю
+            await reply_to_update(update,
+                                  "✅ Заявка на регистрацию отправлена!\n"
+                                  "Ожидайте одобрения администратора.")
+            return ConversationHandler.END
+        else:
+            await self.cancel(update, context)
+            return ConversationHandler.END
+
+    async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Отмена регистрации (новый метод)"""
+        try:
+            query = update.callback_query
+            if query:
+                await query.answer()
+            context.user_data.clear()
+            await reply_to_update(update, "🔹 Регистрация отменена")
+            return ConversationHandler.END
+        except Exception as e:
+            self.logger.error(f"Ошибка отмены регистрации: {str(e)}")
+            return ConversationHandler.END
 
     @staticmethod
     def validate_nickname(nick: str) -> tuple[bool, str]:
@@ -441,13 +652,6 @@ class Registration:
         if not Registration.is_nick_unique(nick):
             return False, "Этот ник уже занят. Пожалуйста, выберите другой:"
         return True, nick
-
-    @staticmethod
-    def is_nick_unique(nick: str) -> bool:
-        """Проверка уникальности ника в базе"""
-        with sqlite3.connect(Config.DB_PATH) as con:
-            existing = con.execute("SELECT 1 FROM users WHERE ingame_nick=?", (nick.lower(),)).fetchone()
-            return existing is None
 
     @staticmethod
     def validate_ip(ip: str) -> tuple[bool, str]:
@@ -472,126 +676,27 @@ class Registration:
         return True, ip
 
     @staticmethod
+    def is_nick_unique(nick: str) -> bool:
+        """Проверка уникальности ника"""
+        with sqlite3.connect(Config.DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM users WHERE ingame_nick = ?", (nick.lower(),))
+            return cursor.fetchone() is None
+
+    @staticmethod
     def is_ip_unique(ip: str) -> bool:
-        """Проверка уникальности ника в базе"""
-        with sqlite3.connect(Config.DB_PATH) as con:
-            existing = con.execute("SELECT 1 FROM users WHERE ip=?", (ip.lower(),)).fetchone()
-            return existing is None
-
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Начало процесса регистрации"""
-        try:
-            message = update.message or update.callback_query.message
-            if Database.get_user(update.effective_user.id):
-                await reply_to_update(update, Config.TEXTS["already_approved"])
-                return ConversationHandler.END
-            context.user_data.clear()
-            context.user_data['reg_tg_username'] = update.effective_user.username or ""
-            help_text = (
-                "✏️ Введите ваш внутриигровой ник, он будет использоваться для входа на сервер\n"
-                "⚠️ Ник должен быть от 3 до 16 символов нижнего регистра (авто-преобразование), латиница, цифры и _\n"
-            )
-            await reply_to_update(update, help_text)
-            return Config.REG_NICK
-        except Exception as e:
-            logger.error(f"Ошибка в start регистрации: {e}")
-            if update.callback_query:
-                await update.callback_query.answer("Произошла ошибка при старте регистрации")
-            return ConversationHandler.END
-
-    async def process_nick(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Обработка введенного ника"""
-        try:
-            nick = update.message.text.strip()
-            is_valid, message = self.validate_nickname(nick)
-            if not is_valid:
-                await reply_to_update(update, message)
-                return Config.REG_NICK
-            # Сохраняем ник в user_data
-            context.user_data['reg_ingame_nick'] = nick.lower()
-            # Запрашиваем IP
-            ip_help = (
-                "✏️ Введите ваш IP-адрес:\n"
-                "🔍 [Узнайте свой IP](https://2ip.ru/)\n"
-                "⚠️ Формат: 123.45.67.89 (IPv4) или 2001:0db8:85a3:0000:0000:8a2e:0370:7334 (IPv6)"
-            )
-            await reply_to_update(update, ip_help)
-            return Config.REG_IP
-        except Exception as e:
-            logger.error(f"Ошибка в process_nick: {e}")
-            await reply_to_update(update, "Произошла ошибка при обработке ника. Попробуйте еще раз:")
-            return Config.REG_NICK
-
-    async def process_ip(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Обработка введенного IP с валидацией"""
-        try:
-            ip = update.message.text.strip()
-            is_valid, message = self.validate_ip(ip)
-            if not is_valid:
-                await reply_to_update(update, message)
-                return Config.REG_IP
-            context.user_data['reg_ip'] = ip
-            kb = create_keyboard([
-                [InlineKeyboardButton("✅ Подтвердить", callback_data="reg_confirm_yes")],
-                [InlineKeyboardButton("❌ Отменить", callback_data="reg_confirm_no")]
-            ])
-            confirm_text = (
-                "⚠️ Пожалуйста, подтвердите введённые данные:\n"
-                f"🔹 Ник: {context.user_data['reg_ingame_nick']}\n"
-                f"🔹 IP: {context.user_data['reg_ip']}\n\n"
-                "После подтверждения заявка будет отправлена администраторам."
-            )
-            await reply_to_update(update, confirm_text, kb)
-            return Config.REG_CONFIRM
-        except Exception as e:
-            logger.error(f"Ошибка в process_ip: {e}")
-            await reply_to_update(update, "Произошла ошибка при обработке IP. Попробуйте еще раз:")
-            return Config.REG_IP
-
-    async def confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Подтверждение регистрации"""
-        query = update.callback_query
-        await query.answer()
-
-        if query.data == "reg_confirm_yes":
-            data = context.user_data
-            tg_id = update.effective_user.id
-
-            # Экранирование для MarkdownV2
-            safe_nick = re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', data['reg_ingame_nick'])
-            safe_ip = re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', data['reg_ip'])
-            safe_username = re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', data['reg_tg_username'] or "нет username")
-
-            Database.add_user(tg_id, data['reg_tg_username'],
-                              data['reg_ingame_nick'], data['reg_ip'])
-
-            admin_message = (
-                "⚠️ *Новая заявка на регистрацию*\n"
-                f"👤 Пользователь: {safe_username}\n"
-                f"🆔 ID: `{tg_id}`\n"
-                f"🎮 Ник: `{safe_nick}`\n"
-                f"🌐 IP: `{safe_ip}`\n\n"
-                "_Для управления используйте админ\\-панель_"
-            )
-
-            await self.bot.admin._notify_admins(context, admin_message, tg_id)
-            await reply_to_update(update, "✅ Заявка отправлена на модерацию")
-        else:
-            await reply_to_update(update, Config.TEXTS["reg_cancelled"])
-
-        return ConversationHandler.END
-
-    async def cancel_registration(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        """Отмена регистрации"""
-        context.user_data.clear()
-        await reply_to_update(update, Config.TEXTS["reg_cancelled"])
-        return ConversationHandler.END
+        """Проверка уникальности IP"""
+        with sqlite3.connect(Config.DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM users WHERE ip = ?", (ip,))
+            return cursor.fetchone() is None
 
 
 # ==================== ПОЛЬЗОВАТЕЛЬ ====================
 class User:
     def __init__(self, bot):
         self.bot = bot
+        self.logger = logging.getLogger(__name__)
 
     async def edit_nick_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начало редактирования ника с улучшенной обработкой"""
@@ -606,14 +711,50 @@ class User:
         return Config.EDIT_NICK
 
     async def edit_nick_save(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Сохранение нового ника"""
-        new_nick = update.message.text.strip()
+        """Сохранение нового ника с очисткой старых данных и приведением к нижнему регистру"""
+        user_id = update.effective_user.id
+        user_data = Database.get_user(user_id)
+        if not user_data:
+            await reply_to_update(update, "⚠️ Пользователь не найден")
+            return ConversationHandler.END
+
+        old_nick = user_data['ingame_nick']
+        raw_nick = update.message.text.strip()
+        new_nick = raw_nick.lower()  # Принудительное приведение к нижнему регистру
+
+        # Проверка, изменился ли ник (учитывая регистр)
+        if new_nick == old_nick.lower():
+            await reply_to_update(update, "⚠️ Новый ник не отличается от текущего")
+            return Config.EDIT_NICK
+
+        # Валидация нового ника (уже в нижнем регистре)
         is_valid, message = Registration.validate_nickname(new_nick)
         if not is_valid:
             await reply_to_update(update, message)
             return Config.EDIT_NICK
-        Database.update_user(update.effective_user.id, ingame_nick=new_nick.lower())
-        await reply_to_update(update, f"✅ Ник успешно изменён на: {new_nick}")
+
+        # Очищаем старые данные
+        WhitelistManager.remove_from_whitelist(old_nick)
+
+        # Обновляем данные (сохраняем в нижнем регистре)
+        Database.update_user(user_id, ingame_nick=new_nick)
+
+        # Если пользователь одобрен - добавляем новые данные
+        if user_data['approved']:
+            # WhitelistManager.add_to_whitelist(new_nick)
+
+            # Уведомляем админов (показываем оригинальный ввод)
+            admin_msg = (f"ℹ️ Пользователь {user_data['tg_username']} (ID: {user_id}) изменил ник:\n"
+                         f"Старый: {old_nick}\n"
+                         f"Новый: {raw_nick} (сохранён как: {new_nick})")
+            await self.bot.admin._notify_admins_simple(context, admin_msg)
+
+        await reply_to_update(
+            update,
+            f"✅ Ник успешно изменён:\n"
+            f"Старый: {old_nick}\n"
+            f"Новый: {raw_nick} (будет отображаться как {new_nick})"
+        )
         return ConversationHandler.END
 
     async def edit_ip_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -628,13 +769,37 @@ class User:
         return Config.EDIT_IP
 
     async def edit_ip_save(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Сохранение нового ip"""
+        """Сохранение нового IP с очисткой старых правил"""
+        user_id = update.effective_user.id
+        user_data = Database.get_user(user_id)
+        if not user_data:
+            await reply_to_update(update, "⚠️ Пользователь не найден")
+            return ConversationHandler.END
+
+        old_ip = user_data['ip']
         new_ip = update.message.text.strip()
+
+        # Валидация нового IP
         is_valid, message = Registration.validate_ip(new_ip)
         if not is_valid:
             await reply_to_update(update, message)
             return Config.EDIT_IP
-        Database.update_user(update.effective_user.id, ip=new_ip)
+
+        # Очищаем старые правила
+        WhitelistManager.manage_ufw_rules(old_ip, 'remove')
+
+        # Обновляем данные
+        Database.update_user(user_id, ip=new_ip)
+
+        # Если пользователь одобрен - добавляем новые правила
+        if user_data['approved']:
+            # WhitelistManager.manage_ufw_rules(new_ip, 'add')
+
+            # Уведомляем админов
+            admin_msg = (f"ℹ️ Пользователь {user_data['tg_username']} (ID: {user_id}) изменил IP:\n"
+                         f"Старый: {old_ip}\nНовый: {new_ip}")
+            await self.bot.admin._notify_admins_simple(context, admin_msg)
+
         await reply_to_update(update, f"✅ IP успешно изменён на: {new_ip}")
         return ConversationHandler.END
 
@@ -645,14 +810,18 @@ class User:
 
     async def unreg_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начало удаления регистрации"""
-        query = update.callback_query
-        message = update.effective_message
-        if query:
-            await query.answer()
-        await reply_to_update(update, "Вы уверены, что хотите удалить свою регистрацию?", reply_markup=create_keyboard([
-            [InlineKeyboardButton("✅ Да, удалить", callback_data="user_unreg_confirm")],
-            [InlineKeyboardButton("❌ Нет, отменить", callback_data="user_cancel_unreg")]
-        ]))
+        user = Database.get_user(update.effective_user.id)
+        if not user:
+            await reply_to_update(update, "Вы не зарегистрированы!")
+            return
+
+        await reply_to_update(update,
+                              "Вы уверены, что хотите удалить свою регистрацию?\n"
+                              "⚠️ Это действие нельзя отменить!",
+                              reply_markup=create_keyboard([
+                                  [InlineKeyboardButton("✅ Да, удалить", callback_data="user_unreg_confirm")],
+                                  [InlineKeyboardButton("❌ Нет, отменить", callback_data="user_cancel_unreg")]
+                              ]))
 
     async def cancel_unreg(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отмена удаления регистрации"""
@@ -664,13 +833,34 @@ class User:
         """Подтверждение удаления регистрации"""
         query = update.callback_query
         await query.answer()
+        user_id = update.effective_user.id
+        user_data = Database.get_user(user_id)
+        if not user_data:
+            self.logger.warning(f"Попытка удаления несуществующего пользователя {user_id}")
+            await reply_to_update(update, "⚠️ Ваш аккаунт не найден!")
+            return
+        # Полная очистка данных пользователя
+        nick = user_data['ingame_nick']
+        ip = user_data['ip']
+        self.logger.info(f"Удаление регистрации пользователя {user_id} ({nick})")
+        Database.delete_user(user_id)
+        WhitelistManager.remove_from_whitelist(nick)
+        WhitelistManager.manage_ufw_rules(ip, 'remove')
+        # Уведомление админов
+        admin_message = f"❌ Пользователь {nick} удалил свою регистрацию"
+        self.logger.info(f"Отправка уведомления админам об удалении пользователя {nick}")
+        try:
+            for admin_id in Config.ADMIN_IDS:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=admin_message
+                )
+        except Exception as e:
+            self.logger.error(f"Ошибка уведомления админов: {e}")
 
-        Database.delete_user(update.effective_user.id)
-        await reply_to_update(
-            update,
-            "✅ Ваша регистрация удалена.\n"
-            "Вы можете зарегистрироваться снова командой /reg"
-        )
+        await reply_to_update(update,
+                              "✅ Ваша регистрация полностью удалена.\n"
+                              "Вы можете зарегистрироваться снова командой /reg")
 
     async def check_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Проверка статуса регистрации"""
@@ -692,6 +882,7 @@ class Admin:
         self.bot = bot
         self.server = Server(bot)
         self.service = Service(bot)
+        self.logger = logging.getLogger(__name__)
 
     async def _validate_admin(self, update: Update) -> bool:
         """Проверка прав администратора"""
@@ -720,15 +911,34 @@ class Admin:
         ]
         await reply_to_update(update, "🔐 Админ-панель:", create_keyboard(buttons))
 
-    async def _notify_admins(self, context: ContextTypes.DEFAULT_TYPE, message: str, user_id: int):
-        """Уведомление администраторов"""
+    async def notify_admins(self, message: str, user_id: int):
+        """Уведомление админов с кнопками одобрения/отклонения"""
         buttons = [
-            [InlineKeyboardButton("✅ Одобрить", callback_data=f"admin_approve_{user_id}"),
-             InlineKeyboardButton("❌ Отклонить", callback_data=f"admin_reject_{user_id}")]]
-        kb = create_keyboard(buttons)
+            [InlineKeyboardButton("✅ Одобрить", callback_data=f"admin_approve_{user_id}")],
+            [InlineKeyboardButton("❌ Отклонить", callback_data=f"admin_reject_{user_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(buttons)
+
         for admin_id in Config.ADMIN_IDS:
             try:
-                await context.bot.send_message(chat_id=admin_id, text=message, reply_markup=kb, parse_mode="MarkdownV2")
+                await self.bot.application.bot.send_message(
+                    chat_id=admin_id,
+                    text=message,
+                    reply_markup=reply_markup,
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                logger.error(f"Ошибка уведомления админа {admin_id}: {e}")
+
+    async def _notify_admins_simple(self, context: ContextTypes.DEFAULT_TYPE, message: str):
+        """Уведомление админов без кнопок"""
+        for admin_id in Config.ADMIN_IDS:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=message,
+                    parse_mode="HTML"
+                )
             except Exception as e:
                 logger.error(f"Ошибка уведомления админа {admin_id}: {e}")
 
@@ -751,35 +961,67 @@ class Admin:
         await reply_to_update(update, "📝 Заявки на одобрение:", create_keyboard(buttons))
 
     async def handle_approve_reject(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка подтверждения/отклонения заявки"""
-        if not await self._validate_admin(update):
-            return
+        """Обработка кнопок одобрения/отклонения"""
         query = update.callback_query
         await query.answer()
+
         try:
-            _, action, user_id = query.data.split('_')
+            # Разбираем callback_data формата "admin_approve_123" или "admin_reject_123"
+            if not query.data or '_' not in query.data:
+                logger.error(f"Неверный формат callback_data: {query.data}")
+                return
+
+            action, user_id = query.data.split('_')[1], query.data.split('_')[2]
             user_id = int(user_id)
+
             user_data = Database.get_user(user_id)
             if not user_data:
-                await reply_to_update(update, "Пользователь не найден", show_alert=True)
+                await query.edit_message_text("⚠️ Пользователь не найден")
                 return
+
             if action == "approve":
+                # Процесс одобрения
                 Database.update_user(user_id, approved=1)
                 WhitelistManager.add_to_whitelist(user_data['ingame_nick'])
-                await reply_to_update(update, f"✅ Пользователь {user_data['ingame_nick']} одобрен", show_alert=True)
+                WhitelistManager.manage_ufw_rules(user_data['ip'], 'add')
+
+                await query.edit_message_text(f"✅ Пользователь {user_data['ingame_nick']} одобрен")
+
                 # Уведомляем пользователя
                 try:
-                    await context.bot.send_message(chat_id=user_id, text="🎉 Ваша заявка одобрена! Теперь вы можете играть на сервере.")
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="🎉 Ваша заявка одобрена! Теперь вы можете играть на сервере."
+                    )
                 except Exception as e:
-                    logger.error(f"Не удалось уведомить пользователя {user_id}: {e}")
+                    logger.error(f"Не удалось уведомить пользователя: {e}")
+
             elif action == "reject":
+                # Процесс отклонения
+                nick = user_data['ingame_nick']
+                ip = user_data['ip']
+
                 Database.delete_user(user_id)
-                await reply_to_update(update, f"❌ Заявка пользователя {user_data['ingame_nick']} отклонена", show_alert=True)
-            # Обновляем список заявок
-            await self.list_pending_requests(update, context)
+                WhitelistManager.remove_from_whitelist(nick)
+                WhitelistManager.manage_ufw_rules(ip, 'remove')
+
+                await query.edit_message_text(f"❌ Заявка {nick} отклонена")
+
+                # Уведомляем пользователя
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="⚠️ Ваша заявка на регистрацию была отклонена администратором."
+                    )
+                except Exception as e:
+                    logger.error(f"Не удалось уведомить пользователя: {e}")
+
         except Exception as e:
-            logger.error(f"Ошибка в handle_approve_reject: {e}")
-            await reply_to_update(update, "⚠️ Произошла ошибка", show_alert=True)
+            logger.error(f"Ошибка обработки заявки: {e}", exc_info=True)
+            try:
+                await query.edit_message_text("⚠️ Произошла ошибка при обработке заявки")
+            except:
+                pass
 
     async def list_users(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Список всех пользователей"""
@@ -827,42 +1069,115 @@ class Admin:
         """Меню управления конкретным пользователем"""
         if not await self._validate_admin(update):
             return
+
         if not user_id:
             query = update.callback_query
             await query.answer()
             user_id = int(query.data.split('_')[-1])
+
         user = Database.get_user(user_id)
         if not user:
             await reply_to_update(update, "Пользователь не найден")
             return
+
         buttons = []
         status = "✅ Одобрен" if user['approved'] else "⏳ Ожидает"
-        # Основная информация о пользователе
         text = (f"Управление пользователем:\n"
                 f"ID: {user['tg_id']}\n"
                 f"Ник: {user['ingame_nick']}\n"
                 f"IP: {user['ip']}\n"
                 f"Статус: {status}")
-        # Кнопки для одобренных пользователей
+
+        # Кнопки для всех пользователей
+        buttons.extend([
+            [InlineKeyboardButton("✏️ Изменить ник", callback_data=f"admin_edit_{user_id}")],
+            [InlineKeyboardButton("🌐 Изменить IP", callback_data=f"admin_editip_{user_id}")],
+            [InlineKeyboardButton("🗑 Удалить запись", callback_data=f"admin_delete_{user_id}")],
+            [InlineKeyboardButton("📨 Отправить сообщение", callback_data=f"admin_msg_{user_id}")]
+        ])
+
+        # Дополнительные кнопки для одобренных пользователей
         if user['approved']:
             buttons.extend([
-                [InlineKeyboardButton("Удалить запись", callback_data=f"admin_delete_{user_id}")],
-                [InlineKeyboardButton("Редактировать запись", callback_data=f"admin_edit_{user_id}")],
-                [InlineKeyboardButton("Отправить сообщение", callback_data=f"admin_msg_{user_id}")],
-                [InlineKeyboardButton("Добавить в WL", callback_data=f"wl_add_{user_id}"),
-                 InlineKeyboardButton("Удалить из WL", callback_data=f"wl_remove_{user_id}")],
-                [InlineKeyboardButton("Добавить UFW", callback_data=f"ufw_add_{user_id}"),
-                 InlineKeyboardButton("Удалить UFW", callback_data=f"ufw_remove_{user_id}")]
+                [InlineKeyboardButton("➕ Добавить в WL", callback_data=f"wl_add_{user_id}"),
+                 InlineKeyboardButton("➖ Удалить из WL", callback_data=f"wl_remove_{user_id}")],
+                [InlineKeyboardButton("➕ Добавить UFW", callback_data=f"ufw_add_{user_id}"),
+                 InlineKeyboardButton("➖ Удалить UFW", callback_data=f"ufw_remove_{user_id}")]
             ])
-        # Кнопки для неодобренных пользователей
         else:
             buttons.extend([
-                [InlineKeyboardButton("Одобрить", callback_data=f"admin_approve_{user_id}")],
-                [InlineKeyboardButton("Отклонить", callback_data=f"admin_reject_{user_id}")]
+                [InlineKeyboardButton("✅ Одобрить", callback_data=f"admin_approve_{user_id}")],
+                [InlineKeyboardButton("❌ Отклонить", callback_data=f"admin_reject_{user_id}")]
             ])
+
         buttons.append([InlineKeyboardButton("◀️ Назад", callback_data="admin_list_users")])
         kb = create_keyboard(buttons)
         await reply_to_update(update, text, kb)
+
+    async def handle_delete_user(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка удаления пользователя"""
+        if not await self._validate_admin(update):
+            return
+
+        query = update.callback_query
+        await query.answer()
+
+        user_id = int(query.data.split('_')[-1])
+        user_data = Database.get_user(user_id)
+
+        if not user_data:
+            await reply_to_update(update, "⚠️ Пользователь не найден")
+            return
+
+        # Полное удаление пользователя
+        Database.delete_user(user_id)
+        WhitelistManager.remove_from_whitelist(user_data['ingame_nick'])
+        WhitelistManager.manage_ufw_rules(user_data['ip'], 'remove')
+
+        await reply_to_update(update, f"✅ Пользователь {user_data['ingame_nick']} полностью удалён")
+        await self.list_users(update, context)
+
+    async def start_send_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Начало процесса отправки сообщения пользователю"""
+        if not await self._validate_admin(update):
+            return
+
+        query = update.callback_query
+        await query.answer()
+
+        user_id = int(query.data.split('_')[-1])
+        user_data = Database.get_user(user_id)
+
+        if not user_data:
+            await reply_to_update(update, "⚠️ Пользователь не найден")
+            return
+
+        context.user_data['message_user_id'] = user_id
+        context.user_data['message_user_nick'] = user_data['ingame_nick']
+
+        await reply_to_update(update, f"✉️ Введите сообщение для пользователя {user_data['ingame_nick']}:")
+        return "admin_message_input"
+
+    async def process_user_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка введённого сообщения для пользователя"""
+        user_id = context.user_data.get('message_user_id')
+        user_nick = context.user_data.get('message_user_nick')
+        message = update.message.text
+
+        if not user_id or not message:
+            await reply_to_update(update, "⚠️ Ошибка: не хватает данных")
+            return ConversationHandler.END
+
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"📨 Сообщение от администратора:\n{message}"
+            )
+            await reply_to_update(update, f"✅ Сообщение отправлено пользователю {user_nick}")
+        except Exception as e:
+            await reply_to_update(update, f"⚠️ Не удалось отправить сообщение: {str(e)}")
+
+        return ConversationHandler.END
 
     async def handle_whitelist_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка действий с whitelist"""
@@ -896,6 +1211,169 @@ class Admin:
             await reply_to_update(update, message)
             await self.user_management_menu(update, context, user_id)
 
+    async def start_edit_nick(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Начало процесса редактирования ника пользователя"""
+        if not await self._validate_admin(update):
+            return
+
+        query = update.callback_query
+        await query.answer()
+
+        user_id = int(query.data.split('_')[-1])
+        user_data = Database.get_user(user_id)
+
+        if not user_data:
+            await reply_to_update(update, "⚠️ Пользователь не найден")
+            return ConversationHandler.END
+
+        context.user_data['edit_user_id'] = user_id
+        context.user_data['edit_type'] = 'nick'
+
+        await reply_to_update(
+            update,
+            f"✏️ Введите новый ник для пользователя {user_data['ingame_nick']}:\n"
+            "• Только латиница, цифры и _\n"
+            "• От 3 до 16 символов\n"
+            "• Будет преобразован в нижний регистр"
+        )
+        return "edit_nick"
+
+    async def edit_user_nick(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Сохранение нового ника пользователя с приведением к нижнему регистру"""
+        user_id = context.user_data.get('edit_user_id')
+        if not user_id:
+            await reply_to_update(update, "⚠️ Ошибка: не найден ID пользователя")
+            return ConversationHandler.END
+
+        user_data = Database.get_user(user_id)
+        if not user_data:
+            await reply_to_update(update, "⚠️ Пользователь не найден")
+            return ConversationHandler.END
+
+        raw_nick = update.message.text.strip()
+        new_nick = raw_nick.lower()  # Приводим к нижнему регистру
+        old_nick = user_data['ingame_nick']
+
+        # Валидация ника (уже в нижнем регистре)
+        is_valid, message = Registration.validate_nickname(new_nick)
+        if not is_valid:
+            await reply_to_update(update, message)
+            return "edit_nick"
+
+        # Проверяем, изменился ли ник
+        if new_nick == old_nick.lower():
+            await reply_to_update(update, "⚠️ Новый ник не отличается от текущего")
+            return "edit_nick"
+
+        # Очищаем старые данные
+        if user_data['approved']:
+            WhitelistManager.remove_from_whitelist(old_nick)
+
+        # Обновляем данные (сохраняем в нижнем регистре)
+        Database.update_user(user_id, ingame_nick=new_nick)
+
+        # Если пользователь одобрен - добавляем новые данные
+        if user_data['approved']:
+            # WhitelistManager.add_to_whitelist(new_nick)
+
+            # Уведомляем самого пользователя
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"🔄 Администратор изменил ваш игровой ник:\n"
+                         f"Старый: {old_nick}\n"
+                         f"Новый: {new_nick}\n\n"
+                         f"Если это ошибка, обратитесь к администрации."
+                )
+            except Exception as e:
+                logger.error(f"Не удалось уведомить пользователя {user_id}: {e}")
+
+        await reply_to_update(
+            update,
+            f"✅ Ник пользователя успешно изменён:\n"
+            f"Старый: {old_nick}\nНовый: {new_nick}\n\n"
+            f"Пользователь получил уведомление об изменении."
+        )
+        return ConversationHandler.END
+
+    async def start_edit_ip(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Начало процесса редактирования IP пользователя"""
+        if not await self._validate_admin(update):
+            return
+
+        query = update.callback_query
+        await query.answer()
+
+        user_id = int(query.data.split('_')[-1])
+        user_data = Database.get_user(user_id)
+
+        if not user_data:
+            await reply_to_update(update, "⚠️ Пользователь не найден")
+            return ConversationHandler.END
+
+        context.user_data['edit_user_id'] = user_id
+        context.user_data['edit_type'] = 'ip'
+
+        await reply_to_update(
+            update,
+            f"🌐 Введите новый IP для пользователя {user_data['ingame_nick']}:\n"
+            "• Формат: 123.45.67.89 (IPv4) или 2001:0db8:85a3:0000:0000:8a2e:0370:7334 (IPv6)\n"
+            "• Можно узнать на сайтах типа 2ip.ru"
+        )
+        return "edit_ip"
+
+    async def edit_user_ip(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Сохранение нового IP пользователя с уведомлением самого игрока"""
+        user_id = context.user_data.get('edit_user_id')
+        if not user_id:
+            await reply_to_update(update, "⚠️ Ошибка: не найден ID пользователя")
+            return ConversationHandler.END
+
+        user_data = Database.get_user(user_id)
+        if not user_data:
+            await reply_to_update(update, "⚠️ Пользователь не найден")
+            return ConversationHandler.END
+
+        new_ip = update.message.text.strip()
+        old_ip = user_data['ip']
+
+        # Валидация IP
+        is_valid, message = Registration.validate_ip(new_ip)
+        if not is_valid:
+            await reply_to_update(update, message)
+            return "edit_ip"
+
+        # Очищаем старые правила
+        if user_data['approved']:
+            WhitelistManager.manage_ufw_rules(old_ip, 'remove')
+
+        # Обновляем данные
+        Database.update_user(user_id, ip=new_ip)
+
+        # Если пользователь одобрен - добавляем новые правила
+        if user_data['approved']:
+            # WhitelistManager.manage_ufw_rules(new_ip, 'add')
+
+            # Уведомляем самого пользователя
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"🔄 Администратор изменил ваш IP-адрес для доступа:\n"
+                         f"Старый: {old_ip}\n"
+                         f"Новый: {new_ip}\n\n"
+                         f"Если вы не запрашивали это изменение, немедленно обратитесь к администрации!"
+                )
+            except Exception as e:
+                logger.error(f"Не удалось уведомить пользователя {user_id}: {e}")
+
+        await reply_to_update(
+            update,
+            f"✅ IP пользователя успешно изменён:\n"
+            f"Старый: {old_ip}\nНовый: {new_ip}\n\n"
+            f"Пользователь получил уведомление об изменении."
+        )
+        return ConversationHandler.END
+
     async def reload_whitelist(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Перезагрузка whitelist"""
         if not await self._validate_admin(update):
@@ -904,6 +1382,19 @@ class Admin:
         await query.answer()
         success, message = WhitelistManager.reload_whitelist()
         await reply_to_update(update, message)
+
+    async def delete_user(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+        """Полное удаление пользователя администратором"""
+        user_data = Database.get_user(user_id)
+        if not user_data:
+            await reply_to_update(update, "⚠️ Пользователь не найден!")
+            return
+        # Полная очистка
+        WhitelistManager.remove_from_whitelist(user_data['ingame_nick'])
+        WhitelistManager.manage_ufw_rules(user_data['ip'], 'remove')
+        Database.delete_user(user_id)
+        await reply_to_update(update, f"✅ Пользователь {user_data['ingame_nick']} полностью удалён")
+        await self.list_users(update, context)
 
     async def handle_back(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка кнопки Назад"""
@@ -1111,7 +1602,6 @@ class Server:
         buttons = [[InlineKeyboardButton(player, callback_data=f"unban_{player}")]
                    for player in banned_players]
         buttons.append([InlineKeyboardButton("◀️ Назад", callback_data="ban_menu")])
-
         await reply_to_update(update, "Выберите игрока для разблокировки:", create_keyboard(buttons))
 
     async def ban_player(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1263,6 +1753,7 @@ class Service:
             ]
         )
 
+
 # ==================== WHITELIST ====================
 class WhitelistManager:
     @staticmethod
@@ -1293,17 +1784,34 @@ class WhitelistManager:
             return False, f"Ошибка при перезагрузке whitelist: {str(e)}"
 
     @staticmethod
-    def manage_ufw_rules(ip, action='add'):
-        """Управление UFW правилами"""
+    def manage_ufw_rules(ip: str, action: str):
+        """Безопасное управление UFW правилами"""
         try:
+            if not ip:
+                return False, "IP не указан"
             if action == 'add':
-                add_ufw_rules(ip)
-                return True, f"UFW правила добавлены для IP {ip}"
+                return add_ufw_rules(ip)
+            elif action == 'remove':
+                return remove_ufw_rules(ip)
             else:
-                remove_ufw_rules(ip)
-                return True, f"UFW правила удалены для IP {ip}"
+                return False, "Неизвестное действие"
         except Exception as e:
-            return False, f"Ошибка управления UFW: {str(e)}"
+            logger.error(f"Ошибка UFW для IP {ip}: {e}")
+            return False, f"Ошибка: {str(e)}"
+
+    @staticmethod
+    def full_cleanup(nickname: str, ip: str):
+        """Полная очистка всех следов пользователя"""
+        try:
+            # Удаление из whitelist
+            remove_from_whitelist(nickname)
+            # Удаление правил UFW
+            remove_ufw_rules(ip)
+            # Перезагрузка whitelist
+            reload_whitelist()
+            return True, "Полная очистка выполнена"
+        except Exception as e:
+            return False, f"Ошибка очистки: {str(e)}"
 
 
 # ==================== ЗАПУСК ====================

@@ -18,6 +18,7 @@ def run_screen_command(command: str):
 
 
 def add_to_whitelist(nickname):
+    nickname = nickname.lower()
     if not is_screen_session_running():
         print(f"Ошибка: screen-сессия '{SESSION_NAME}' не запущена.", file=sys.stderr)
         sys.exit(1)
@@ -25,6 +26,7 @@ def add_to_whitelist(nickname):
 
 
 def remove_from_whitelist(nickname):
+    nickname = nickname.lower()
     if not is_screen_session_running():
         print(f"Ошибка: screen-сессия '{SESSION_NAME}' не запущена.", file=sys.stderr)
         sys.exit(1)
@@ -90,7 +92,7 @@ def main():
         print("Ошибка: не указан никнейм игрока.", file=sys.stderr)
         sys.exit(1)
 
-    nickname = sys.argv[2]
+    nickname = sys.argv[2].lower()
     ip = sys.argv[3] if len(sys.argv) > 3 else None  # IP теперь передается без валидации
 
     try:

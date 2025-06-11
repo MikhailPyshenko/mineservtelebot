@@ -1,8 +1,11 @@
+import re
 import os
 import subprocess
 from pathlib import Path
 from dotenv import load_dotenv
 import psutil
+import time
+from datetime import datetime, timedelta
 
 load_dotenv()
 
@@ -73,44 +76,6 @@ class Service:
         except Exception as e:
             return f"Ошибка проверки статуса: {str(e)}"
 
-    def get_players_count(self):
-        """Получение количества игроков онлайн"""
-        from .server import Server
-        server = Server(self.screen_name)
-        return server.get_online_players()
-
-    def get_server_stats(self):
-        """Получение статистики сервера (CPU, RAM, TPS)"""
-        stats = {}
-        # Получение CPU и RAM
-        try:
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                if 'java' in proc.info['name'].lower() and 'minecraft' in ' '.join(proc.info['cmdline'] or []):
-                    with psutil.Process(proc.info['pid']) as p:
-                        stats.update({
-                            'cpu': f"{p.cpu_percent()}%",
-                            'ram': f"{p.memory_info().rss / 1024 / 1024:.2f} MB"
-                        })
-                    break
-        except Exception as e:
-            stats['error'] = f"Ошибка мониторинга процесса: {str(e)}"
-        # Получение TPS из логов
-        log_file = self.server_dir / "logs/latest.log"
-        if log_file.exists():
-            try:
-                with open(log_file, 'r', encoding='utf-8') as f:
-                    for line in reversed(list(f)[-100:]):  # Чтение в обратном порядке
-                        if "Mean tick time:" in line:
-                            try:
-                                tick_time = float(line.split("Mean tick time:")[1].split()[0])
-                                stats['tps'] = f"{min(20.0, 1000 / tick_time):.1f}"
-                            except (IndexError, ValueError):
-                                pass
-                            break
-            except Exception as e:
-                if 'error' not in stats:
-                    stats['error'] = f"Ошибка чтения логов: {str(e)}"
-        return stats or {'error': 'Данные недоступны'}
     def get_world_size(self):
         """Получение размера мира"""
         world_dir = self.server_dir / "world"
@@ -122,3 +87,93 @@ class Service:
                 fp = os.path.join(dirpath, f)
                 total_size += os.path.getsize(fp)
         return f"{total_size / 1024 / 1024:.2f} MB"
+
+    def enable_logging(self):
+        """Запуск логирования в screen"""
+        try:
+            command = 'screen -dmS mineservtelebot_logs_py python3 /root/minecraft/mineservtelebot/server_menu/logs.py'
+            subprocess.run(command, shell=True, check=True)
+            return True, "Логирование запущено в screen-сессии"
+        except subprocess.CalledProcessError as e:
+            return False, f"Ошибка запуска логирования: {str(e)}"
+
+    def disable_logging(self):
+        """Остановка screen-сессии с логированием"""
+        try:
+            subprocess.run(["screen", "-S", "mineservtelebot_logs_py", "-XS", "quit"], check=True)
+            return True, "Логирование остановлено"
+        except subprocess.CalledProcessError as e:
+            return False, f"Ошибка остановки логирования: {str(e)}"
+
+    def execute_command(self, command):
+        """Выполнение произвольной команды на сервере"""
+        return self._run_screen_command(command)
+
+    def get_server_stats(self):
+        """Получение статистики сервера: CPU, RAM, TPS"""
+        stats = {"cpu": "❌ N/A", "ram": "❌ N/A", "tps": "❌ N/A"}
+        try:
+            # Проверяем, запущена ли screen-сессия
+            result = subprocess.run(["screen", "-ls"], capture_output=True, text=True)
+            screen_sessions = [line.split()[0] for line in result.stdout.split("\n") if self.screen_name in line]
+            if not screen_sessions:
+                return {"error": "🔴 Screen-сессия не запущена"}
+            # Ищем процесс Minecraft
+            server_running = False
+            for proc in psutil.process_iter(attrs=['pid', 'name', 'cmdline', 'memory_info', 'cpu_percent']):
+                proc_info = proc.as_dict(attrs=['pid', 'name', 'cmdline', 'memory_info', 'cpu_percent'])
+                cmdline = ' '.join(proc_info.get('cmdline', []))
+                if 'java' in proc_info.get('name', '').lower() and 'minecraft' in cmdline and '-jar' in cmdline:
+                    server_running = True
+                    stats.update({
+                        "cpu": f"{proc_info.get('cpu_percent', 0)}%",
+                        "ram": f"{proc_info.get('memory_info').rss / 1024 / 1024:.2f} MB"
+                    })
+                    break
+            if not server_running:
+                return {"error": "🔴 Сервер запущен, но процесс Minecraft не найден"}
+            # Читаем TPS из логов
+            log_file = self.server_dir / "logs/latest.log"
+            if log_file.exists():
+                try:
+                    with open(log_file, 'r', encoding='utf-8') as f:
+                        for line in reversed(list(f)[-100:]):  # Читаем в обратном порядке
+                            if "Mean tick time:" in line:
+                                try:
+                                    tick_time = float(line.split("Mean tick time:")[1].split()[0])
+                                    stats["tps"] = f"{min(20.0, 1000 / tick_time):.1f}"
+                                except (IndexError, ValueError):
+                                    pass
+                                break
+                except Exception as e:
+                    stats["error"] = f"⚠️ Ошибка чтения логов: {str(e)}"
+        except Exception as e:
+            stats["error"] = f"⚠️ Ошибка мониторинга сервера: {str(e)}"
+        return stats
+
+    def get_uptime(self):
+        """Получение времени работы Minecraft-сервера через screen и процессы"""
+        try:
+            # Проверяем, запущена ли screen-сессия
+            result = subprocess.run(["screen", "-ls"], capture_output=True, text=True)
+            screen_sessions = [line.split()[0] for line in result.stdout.split("\n") if self.screen_name in line]
+            if not screen_sessions:
+                return "🔴 Screen-сессия не запущена"
+            # Ищем процесс Minecraft
+            start_time = None
+            for proc in psutil.process_iter(attrs=['pid', 'name', 'cmdline', 'create_time']):
+                proc_info = proc.as_dict(attrs=['pid', 'name', 'cmdline', 'create_time'])
+                cmdline = ' '.join(proc_info.get('cmdline', []))
+                if 'java' in proc_info.get('name', '').lower() and 'minecraft' in cmdline and '-jar' in cmdline:
+                    start_time = proc_info.get('create_time', time.time())
+                    break
+            if not start_time:
+                return "🔴 Сервер запущен, но процесс Minecraft не найден"
+            # Рассчитываем время работы
+            uptime_seconds = time.time() - start_time
+            uptime_hours = int(uptime_seconds // 3600)
+            uptime_minutes = int((uptime_seconds % 3600) // 60)
+            uptime_seconds = int(uptime_seconds % 60)
+            return f"🟢 Сервер `{self.screen_name}` работает {uptime_hours} ч {uptime_minutes} мин {uptime_seconds} сек"
+        except Exception as e:
+            return f"⚠️ Ошибка получения времени работы: {str(e)}"

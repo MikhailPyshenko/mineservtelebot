@@ -3,11 +3,12 @@ import re
 import sqlite3
 import logging
 import ipaddress
+import time
+import subprocess
 from pathlib import Path
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, \
-    MessageHandler, filters, BaseHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, MessageHandler, filters, BaseHandler
 from server_menu.service import Service as ServerService
 from server_menu.server import Server as MinecraftServer
 from server_menu.whitelist import add_to_whitelist, remove_from_whitelist, reload_whitelist, add_ufw_rules, remove_ufw_rules
@@ -76,6 +77,9 @@ class Config:
     BOT_TOKEN = os.getenv("BOT_TOKEN")
     ADMIN_IDS = set(map(int, os.getenv("ADMIN_IDS", "").split(",")))
     DB_PATH = os.path.join(os.path.dirname(__file__), "users.db")
+    SCREEN_NAME = os.getenv("SCREEN_NAME")
+    SERVER_DIR = Path(os.getenv("SERVER_DIR"))
+    SCRIPTS_DIR = Path(os.getenv("SCRIPTS_DIR"))
 
     # Состояния ConversationHandler
     (REG_NICK, REG_IP, REG_CONFIRM, EDIT_NICK, EDIT_IP, ADMIN_SENDMSG, ADMIN_USER_SELECT, SERVER_MSG_INPUT,
@@ -232,6 +236,11 @@ class MinecraftBot:
             CallbackQueryHandler(self.server.get_weather_menu, pattern="^server_weather$"),
             CallbackQueryHandler(self.server.set_weather, pattern="^weather_"),
             CallbackQueryHandler(self.server.reload_whitelist, pattern="^server_reload_whitelist$"),
+            CallbackQueryHandler(self.server.start_ban_menu, pattern="^ban_menu$"),
+            CallbackQueryHandler(self.server.start_ban_player, pattern="^server_ban$"),
+            CallbackQueryHandler(self.server.start_unban_player, pattern="^server_unban$"),
+            CallbackQueryHandler(self.server.ban_player, pattern="^ban_"),
+            CallbackQueryHandler(self.server.unban_player, pattern="^unban_"),
             self._create_chat_message_handler(),
             # Сервисные обработчики
             CallbackQueryHandler(self.service.service_menu, pattern="^admin_service$"),
@@ -239,6 +248,10 @@ class MinecraftBot:
             CallbackQueryHandler(self.service.start_server, pattern="^service_start$"),
             CallbackQueryHandler(self.service.restart_server, pattern="^service_restart$"),
             CallbackQueryHandler(self.service.stop_server, pattern="^service_stop$"),
+            CallbackQueryHandler(self.service.execute_command, pattern="^service_exec_cmd$"),
+            CallbackQueryHandler(self.service.logging_on, pattern="^service_logging_on$"),
+            CallbackQueryHandler(self.service.logging_off, pattern="^service_logging_off$"),
+            self.service._create_command_handler(),
         ]
         # Убедимся, что все обработчики валидны
         valid_handlers = [h for h in handlers if isinstance(h, BaseHandler)]
@@ -905,62 +918,223 @@ class Admin:
 # ==================== СЕРВЕР ====================
 class Server:
     def __init__(self, bot):
+        """Класс для управления сервером Minecraft"""
         self.bot = bot
+        self.server_module = MinecraftServer(bot)
+        self.players_list = []  # Список игроков онлайн
 
     async def server_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Меню серверных функций"""
-        menu_text = (
-            "🎮 Серверные функции\n"
-        )
-        kb = create_keyboard([
+        """Главное меню серверных функций"""
+        menu_text = "🎮 Управление сервером Minecraft\nВыберите действие:"
+        buttons = [
             [InlineKeyboardButton("👥 Игроки онлайн", callback_data="server_players")],
-            [InlineKeyboardButton("💬 Сообщение в чат", callback_data="server_send_chat")],
+            [InlineKeyboardButton("💬 Глобальный чат", callback_data="server_send_chat")],
+            [InlineKeyboardButton("📨 Приватное сообщение", callback_data="server_private_msg")],
             [InlineKeyboardButton("☀️ Управление погодой", callback_data="server_weather")],
+            [InlineKeyboardButton("⏱ Управление временем", callback_data="server_time")],
+            [InlineKeyboardButton("⚔️ Настройки PVP", callback_data="server_pvp")],
+            [InlineKeyboardButton("🎚 Сложность игры", callback_data="server_difficulty")],
+            [InlineKeyboardButton("🔨 Блокировка игрока", callback_data="server_ban")],
             [InlineKeyboardButton("🔄 Обновить whitelist", callback_data="server_reload_whitelist")],
             [InlineKeyboardButton("◀️ Назад", callback_data="admin_back")],
-            [InlineKeyboardButton("🏠 В основное меню", callback_data="start")]
-        ])
-        await reply_to_update(update, menu_text, kb)
+            [InlineKeyboardButton("🏠 В главное меню", callback_data="start")]
+        ]
+        await reply_to_update(update, menu_text, create_keyboard(buttons))
 
+    # ===== ОСНОВНЫЕ МЕТОДЫ =====
     async def get_players_count(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получение количества игроков онлайн"""
-        players = self.bot.minecraft_server.get_online_players()
-        await reply_to_update(update, players)
+        """Получение списка игроков онлайн"""
+        success, response = self.server_module.get_online_players()
+        if success:
+            self.players_list = response.split(', ') if ', ' in response else [response]
+            await reply_to_update(update, f"Игроки онлайн: {response}")
+        else:
+            await reply_to_update(update, f"Ошибка: {response}")
 
     async def send_chat_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Запрос на ввод сообщения"""
-        await reply_to_update(update, "Введите сообщение для отправки в игровой чат:")
+        """Запрос сообщения для глобального чата"""
+        await reply_to_update(update, "Введите сообщение для отправки в глобальный чат:")
         return "server_chat_msg_input"
 
     async def process_chat_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Отправка сообщения в игровой чат"""
+        """Обработка сообщения для чата"""
         message = update.message.text.strip()
         if not message:
-            await reply_to_update(update, "⚠️ Ошибка: сообщение не может быть пустым.")
+            await reply_to_update(update, "Сообщение не может быть пустым!")
             return "server_chat_msg_input"
-        success, response = MinecraftServer().send_chat_message(message)
-        await reply_to_update(update, response)
 
+        success, response = self.server_module.send_chat_message(message)
+        await reply_to_update(update, response if success else f"Ошибка: {response}")
         return ConversationHandler.END
 
+    # ===== МЕНЮ ПОГОДЫ =====
     async def get_weather_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Меню управления погодой"""
-        kb = create_keyboard([
+        buttons = [
             [InlineKeyboardButton("☀️ Ясно", callback_data="weather_clear")],
             [InlineKeyboardButton("🌧 Дождь", callback_data="weather_rain")],
             [InlineKeyboardButton("⛈ Гроза", callback_data="weather_thunder")],
             [InlineKeyboardButton("◀️ Назад", callback_data="admin_server")]
-        ])
-        await reply_to_update(update, "Выберите тип погоды:", kb)
+        ]
+        await reply_to_update(update, "Выберите тип погоды:", create_keyboard(buttons))
 
     async def set_weather(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Установка погоды"""
         query = update.callback_query
         weather_type = query.data.split('_')[1]
-        success, message = self.bot.minecraft_server.set_weather(weather_type)
+        success, message = self.server_module.set_weather(weather_type)
         await reply_to_update(update, message)
         await self.server_menu(update, context)
 
+    # ===== МЕНЮ ВРЕМЕНИ СУТОК =====
+    async def get_time_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Меню управления временем"""
+        buttons = [
+            [InlineKeyboardButton("🌅 Утро", callback_data="time_day")],
+            [InlineKeyboardButton("🌃 Ночь", callback_data="time_night")],
+            [InlineKeyboardButton("☀️ Полдень", callback_data="time_noon")],
+            [InlineKeyboardButton("🌙 Полночь", callback_data="time_midnight")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="admin_server")]
+        ]
+        await reply_to_update(update, "Установить время суток:", create_keyboard(buttons))
+
+    async def set_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Установка времени"""
+        query = update.callback_query
+        time_type = query.data.split('_')[1]
+        success, message = self.server_module.set_time(time_type)
+        await reply_to_update(update, message)
+        await self.server_menu(update, context)
+
+    # ===== МЕНЮ PVP =====
+    async def get_pvp_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Меню управления PVP"""
+        buttons = [
+            [InlineKeyboardButton("✅ Включить PVP", callback_data="pvp_enable")],
+            [InlineKeyboardButton("❌ Выключить PVP", callback_data="pvp_disable")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="admin_server")]
+        ]
+        await reply_to_update(update, "Настройки PVP:", create_keyboard(buttons))
+
+    async def toggle_pvp(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Включение/выключение PVP"""
+        query = update.callback_query
+        action = query.data.split('_')[1]
+        if action == "enable":
+            success, message = self.server_module.enable_pvp()
+        else:
+            success, message = self.server_module.disable_pvp()
+        await reply_to_update(update, message)
+        await self.server_menu(update, context)
+
+    # ===== МЕНЮ СЛОЖНОСТИ =====
+    async def get_difficulty_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Меню выбора сложности"""
+        buttons = [
+            [InlineKeyboardButton("😊 Мирная", callback_data="difficulty_peaceful")],
+            [InlineKeyboardButton("😃 Легкая", callback_data="difficulty_easy")],
+            [InlineKeyboardButton("😐 Нормальная", callback_data="difficulty_normal")],
+            [InlineKeyboardButton("😈 Сложная", callback_data="difficulty_hard")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="admin_server")]
+        ]
+        await reply_to_update(update, "Выберите сложность:", create_keyboard(buttons))
+
+    async def set_difficulty(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Установка сложности"""
+        query = update.callback_query
+        difficulty = query.data.split('_')[1]
+        success, message = self.server_module.set_difficulty(difficulty)
+        await reply_to_update(update, message)
+        await self.server_menu(update, context)
+
+    # ===== МЕНЮ ПРИВАТНЫХ СООБЩЕНИЙ =====
+    async def start_private_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Начало процесса отправки приватного сообщения"""
+        success, players = self.server_module.get_online_players()
+        if not success or not players:
+            await reply_to_update(update, "Нет игроков онлайн для отправки сообщения")
+            return
+        self.players_list = players.split(', ')
+        buttons = [[InlineKeyboardButton(player, callback_data=f"privmsg_{player}")]
+                   for player in self.players_list]
+        buttons.append([InlineKeyboardButton("◀️ Назад", callback_data="admin_server")])
+        await reply_to_update(update, "Выберите игрока:", create_keyboard(buttons))
+        return "privmsg_select_player"
+
+    async def select_player_for_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка выбора игрока"""
+        query = update.callback_query
+        player = query.data.split('_')[1]
+        context.user_data['selected_player'] = player
+        await reply_to_update(update, f"Введите сообщение для игрока {player}:")
+        return "privmsg_enter_text"
+
+    async def send_private_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Отправка приватного сообщения"""
+        message = update.message.text
+        player = context.user_data['selected_player']
+        success, response = self.server_module.send_private_message(player, message)
+        await reply_to_update(update, response if success else f"Ошибка: {response}")
+        return ConversationHandler.END
+
+    # ===== МЕНЮ БЛОКИРОВКИ ИГРОКОВ =====
+    async def start_ban_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Меню управления блокировками"""
+        buttons = [
+            [InlineKeyboardButton("⛔ Заблокировать игрока", callback_data="server_ban")],
+            [InlineKeyboardButton("✅ Разблокировать игрока", callback_data="server_unban")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="admin_server")]
+        ]
+        await reply_to_update(update, "Управление блокировками игроков:", create_keyboard(buttons))
+
+    async def start_ban_player(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Начало процесса блокировки игрока"""
+        registered_users = Database.list_users(approved=True)
+        if not registered_users:
+            await reply_to_update(update, "Нет зарегистрированных игроков")
+            return
+        buttons = [[InlineKeyboardButton(f"{user[2]} (ID: {user[0]})", callback_data=f"ban_{user[0]}")]
+                   for user in registered_users]
+        buttons.append([InlineKeyboardButton("◀️ Назад", callback_data="ban_menu")])
+        await reply_to_update(update, "Выберите игрока для блокировки:", create_keyboard(buttons))
+
+    async def start_unban_player(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Начало процесса разблокировки игрока"""
+        # Здесь нужно получить список забаненных игроков с сервера
+        success, banned_players = self.server_module.get_banned_players()
+        if not success:
+            await reply_to_update(update, f"Ошибка получения списка забаненных: {banned_players}")
+            return
+        if not banned_players:
+            await reply_to_update(update, "Нет забаненных игроков")
+            return
+        buttons = [[InlineKeyboardButton(player, callback_data=f"unban_{player}")]
+                   for player in banned_players]
+        buttons.append([InlineKeyboardButton("◀️ Назад", callback_data="ban_menu")])
+
+        await reply_to_update(update, "Выберите игрока для разблокировки:", create_keyboard(buttons))
+
+    async def ban_player(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Блокировка выбранного игрока"""
+        query = update.callback_query
+        user_id = int(query.data.split('_')[1])
+        user = Database.get_user(user_id)
+        if not user:
+            await reply_to_update(update, "Игрок не найден в базе данных!")
+            return
+        success, response = self.server_module.ban_player(user['ingame_nick'])
+        await reply_to_update(update, response)
+        await self.start_ban_menu(update, context)
+
+    async def unban_player(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Разблокировка выбранного игрока"""
+        query = update.callback_query
+        player_name = query.data.split('_')[1]
+        success, response = self.server_module.unban_player(player_name)
+        await reply_to_update(update, response)
+        await self.start_ban_menu(update, context)
+
+    # ===== ДРУГИЕ МЕТОДЫ =====
     async def reload_whitelist(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Перезагрузка whitelist"""
         success, message = WhitelistManager.reload_whitelist()
@@ -971,28 +1145,63 @@ class Server:
 class Service:
     def __init__(self, bot):
         self.bot = bot
+        self.server_service = ServerService(bot)
+        self.logging_enabled = True
 
     async def service_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Меню сервисных функций"""
-        status = self.bot.server_service.get_server_status()
-        stats = self.bot.server_service.get_server_stats()
+        try:
+            stats = self.bot.server_service.get_server_stats()
+            uptime = self.get_server_uptime()
+            world_size = self.bot.server_service.get_world_size()
+        except Exception as e:
+            stats = {"status": "Ошибка получения данных", "cpu": "N/A", "ram": "N/A", "tps": "N/A"}
+            uptime = f"⚠️ Ошибка: {str(e)}"
+            world_size = "N/A"
         status_text = (
             f"🛠 Сервисные функции\n\n"
-            f"🔹 Статус: {status}\n"
+            f"🔹 Статус: {stats.get('status', 'N/A')}\n"
+            f"🔹 Время работы: {uptime}\n"
             f"🔹 CPU: {stats.get('cpu', 'N/A')}\n"
             f"🔹 RAM: {stats.get('ram', 'N/A')}\n"
             f"🔹 TPS: {stats.get('tps', 'N/A')}\n"
-            f"🔹 Размер мира: {self.bot.server_service.get_world_size()}"
+            f"🔹 Размер мира: {world_size}\n"
+            f"🔹 Логирование: {'ВКЛ' if self.logging_enabled else 'ВЫКЛ'}"
         )
         kb = create_keyboard([
             [InlineKeyboardButton("🔄 Копия мира", callback_data="service_backup")],
             [InlineKeyboardButton("🟢 Включение сервера", callback_data="service_start")],
             [InlineKeyboardButton("🟠 Перезагрузка сервера", callback_data="service_restart")],
             [InlineKeyboardButton("🔴 Выключение сервера", callback_data="service_stop")],
+            [InlineKeyboardButton("📝 Ввод команды", callback_data="service_exec_cmd")],
+            [
+                InlineKeyboardButton("📋 Логи ВКЛ", callback_data="service_logging_on"),
+                InlineKeyboardButton("📴 Логи ВЫКЛ", callback_data="service_logging_off")
+            ],
             [InlineKeyboardButton("◀️ Назад", callback_data="admin_back")],
             [InlineKeyboardButton("🏠 В основное меню", callback_data="start")]
         ])
         await reply_to_update(update, status_text, kb)
+
+    async def execute_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Запрос на ввод команды для сервера"""
+        await reply_to_update(update, "Введите команду для выполнения на сервере:")
+        context.user_data["waiting_for_command"] = True  # Устанавливаем флаг ожидания команды
+        return "service_cmd_input"
+
+    async def process_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка введенной команды"""
+        command = update.message.text.strip()
+        if not command:
+            await reply_to_update(update, "⚠️ Команда не может быть пустой")
+            return "service_cmd_input"
+        success, message = self.server_service.execute_command(command)
+        if success:
+            await reply_to_update(update, f"✅ Команда выполнена:\n{message}")
+        else:
+            await reply_to_update(update, f"⚠️ Ошибка выполнения:\n{message}")
+        context.user_data["waiting_for_command"] = False  # Сбрасываем флаг после выполнения
+        return ConversationHandler.END
 
     async def backup_world(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Создание копии мира"""
@@ -1014,6 +1223,45 @@ class Service:
         success, message = self.bot.server_service.stop_server()
         await reply_to_update(update, message)
 
+    async def toggle_logging(self, update: Update, context: ContextTypes.DEFAULT_TYPE, enable: bool):
+        """Включение/выключение логирования через screen"""
+        query = update.callback_query
+        await query.answer()
+        if enable:
+            success, message = self.bot.server_service.enable_logging()
+        else:
+            success, message = self.bot.server_service.disable_logging()
+        if success:
+            status = "включено" if enable else "выключено"
+            await reply_to_update(update, f"✅ Логирование {status}")
+        else:
+            await reply_to_update(update, f"⚠️ Ошибка: {message}")
+
+    async def logging_on(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Включение логирования"""
+        await self.toggle_logging(update, context, True)
+
+    async def logging_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Выключение логирования"""
+        await self.toggle_logging(update, context, False)
+
+    def get_server_uptime(self):
+        """Получение времени работы сервера"""
+        try:
+            return self.bot.server_service.get_uptime()
+        except Exception as e:
+            return f"⚠️ Ошибка получения времени работы: {str(e)}"
+
+    def _create_command_handler(self):
+        """Создает обработчик для ввода команд"""
+        return ConversationHandler(
+            entry_points=[CallbackQueryHandler(self.execute_command, pattern="^service_exec_cmd$")],
+            states={"service_cmd_input": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_command)]},
+            fallbacks=[
+                CommandHandler("cancel", lambda u, c: reply_to_update(u, "Отмена ввода команды")),
+                CallbackQueryHandler(lambda u, c: reply_to_update(u, "Отмена ввода команды"), pattern="^cancel$")
+            ]
+        )
 
 # ==================== WHITELIST ====================
 class WhitelistManager:

@@ -9,7 +9,7 @@ python3 -m venv /root/minecraft/mineservtelebot/venv
 ### ВКЛЮЧЕНИЕ ВИРТУАЛЬНОГО ОКРУЖЕНИЯ
 source /root/minecraft/mineservtelebot/venv/bin/activate
 ### УСТАНОВКА ЗАВИСИМОСТЕЙ
-pip install python-telegram-bot sqlalchemy python-dotenv psutil
+pip install python-telegram-bot sqlalchemy python-dotenv psutil requests
 ### РУЧНОЕ ВКЛЮЧЕНИЕ
 python /root/minecraft/mineservtelebot/mineservtelebot.py
 ### ВКЛЮЧЕНИЕ В ФОНЕ
@@ -73,7 +73,6 @@ mineservtelebot/
 └── ...ЕСЛИ АДМИН... - АДМИНАМ ПОКАЗЫВАЕТСЯ МЕНЮ АДМИНОВ
 	└── \АДМИНИСТРИРОВАНИЕ\ - ВЫЗЫВАЕТСЯ КОМАНДОЙ К БОТУ /admin
 		├── \СЕРВЕРНЫЕ ФУНКЦИИ\ - ОТКРЫВАЕМ МЕНЮ С КОМАНДАМИ К СЕРВЕРУ /server
-		│   ├── \СТАТУС СЕРВЕРА\ - ПОКАЗЫВАЕТ АКТИВЕН ЛИ СЕРВЕР
 		│   ├── \КОЛЛИЧЕСТВО ИГРОКОВ\ - ПОКАЗЫВАЕТ КОЛЛИЧЕСТВО ИГРОКОВ ОНЛАЙН В ИГРЕ
 		│   ├── \ПОИСК ИГРОКА\ - ПОКАЗЫВАЕТ КООРДИНАТЫ ИГРОКА
 		│   ├── \ОТПРАВИТЬ СООБЩЕНИЕ\ - ОТПРАВЛЯЕТ СООБЩЕНИЕ В ИГРОВОЙ ЧАТ ВСЕМ ИГРОКАМ

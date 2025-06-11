@@ -1,6 +1,5 @@
 import os
 import subprocess
-import re
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -55,6 +54,32 @@ class Server:
         """Получение списка онлайн игроков"""
         return self._run_screen_command("list")
 
-    def execute_command(self, command):
-        """Выполнение произвольной команды на сервере"""
-        return self._run_screen_command(command)
+    def find_player(self, player):
+        """Показывает координаты игрока"""
+        return self._run_screen_command(f"execute {player} ~ ~ ~ tp @s")
+
+    def set_time(self, time_of_day):
+        """Позволяет изменить день/ночь на сервере"""
+        valid_times = ["day", "night", "noon", "midnight"]
+        if time_of_day.lower() not in valid_times:
+            return False, "Неверное время суток. Допустимо: day, night, noon, midnight"
+        return self._run_screen_command(f"time set {time_of_day}")
+
+    def ban_player(self, player):
+        """Позволяет забанить игрока"""
+        return self._run_screen_command(f"ban {player}")
+
+    def enable_pvp(self):
+        """Включает PVP"""
+        return self._run_screen_command("gamerule pvp true")
+
+    def disable_pvp(self):
+        """Выключает PVP"""
+        return self._run_screen_command("gamerule pvp false")
+
+    def set_difficulty(self, difficulty):
+        """Меняет сложность игры"""
+        valid_difficulties = ["peaceful", "easy", "normal", "hard"]
+        if difficulty.lower() not in valid_difficulties:
+            return False, "Неверная сложность. Допустимо: peaceful, easy, normal, hard"
+        return self._run_screen_command(f"difficulty {difficulty}")
